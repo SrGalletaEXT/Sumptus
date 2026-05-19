@@ -11,20 +11,23 @@ The current version of Sumptus is designed as a local-first personal finance app
 At this stage, the app helps you:
 
 - add expenses with a title, amount, category, and optional notes
+- choose the real date of each expense
 - store data locally on device
 - review a monthly summary and recent activity
 - inspect category-based spending distribution
-- remove entries from history
+- edit and remove entries from history
 
 The in-app UI is currently in Spanish. This README is intentionally written in English for the public repository.
 
 ## Features
 
 - Fast expense entry flow
+- Editable expense date
 - Monthly total, weekly total, and average expense summary
 - Category breakdown for the current month
 - Recent activity history
-- Local persistence using DataStore
+- Expense editing from history
+- Local persistence using Room
 - Native Android UI built with Jetpack Compose
 
 ## Tech Stack
@@ -33,7 +36,7 @@ The in-app UI is currently in Spanish. This README is intentionally written in E
 - Jetpack Compose
 - Material 3
 - Android ViewModel
-- Preferences DataStore
+- Room
 - Gradle Kotlin DSL
 
 ## Project Status
@@ -44,10 +47,12 @@ What is already implemented:
 
 - core Android project structure
 - expense creation flow
-- local storage
+- local storage with Room
+- one-time migration path from the previous local DataStore format
 - summary dashboard
 - recent history list
-- delete action for saved entries
+- editable expense date
+- edit and delete actions for saved entries
 
 What is not implemented yet:
 

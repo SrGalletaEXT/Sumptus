@@ -1,11 +1,15 @@
 package com.cris.sumptus.data
 
+import androidx.room.Entity
+import androidx.room.PrimaryKey
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import org.json.JSONObject
 
+@Entity(tableName = "expenses")
 data class ExpenseEntry(
+    @PrimaryKey
     val id: String = UUID.randomUUID().toString(),
     val title: String,
     val amountCents: Long,

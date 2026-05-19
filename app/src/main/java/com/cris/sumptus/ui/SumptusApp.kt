@@ -18,9 +18,11 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddCircle
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Insights
 import androidx.compose.material.icons.rounded.ReceiptLong
@@ -58,17 +60,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.KeyboardOptions
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cris.sumptus.CategorySpendSummary
+import com.cris.sumptus.formatExpenseInputDate
 import com.cris.sumptus.MainViewModel
 import com.cris.sumptus.SumptusUiState
 import com.cris.sumptus.data.ExpenseCategory
 import com.cris.sumptus.data.ExpenseEntry
 import java.text.NumberFormat
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Currency
 import java.util.Locale
@@ -86,6 +89,7 @@ private enum class SumptusSection(
 fun SumptusApp(viewModel: MainViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     var currentSection by rememberSaveable { mutableStateOf(SumptusSection.RESUMEN) }
+    var expenseBeingEdited by remember { mutableStateOf<ExpenseEntry?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(uiState.feedbackMessage) {
@@ -136,28 +140,46 @@ fun SumptusApp(viewModel: MainViewModel = viewModel()) {
                 when (currentSection) {
                     SumptusSection.RESUMEN -> DashboardScreen(
                         uiState = uiState,
-                        onOpenAddExpense = { currentSection = SumptusSection.NUEVO },
+                        onOpenAddExpense = {
+                            expenseBeingEdited = null
+                            currentSection = SumptusSection.NUEVO
+                        },
                     )
 
                     SumptusSection.NUEVO -> AddExpenseScreen(
-                        onSaveExpense = { title, amount, category, notes ->
-                            val saved = viewModel.addExpense(
+                        editingExpense = expenseBeingEdited,
+                        onSaveExpense = { existingExpense, title, amount, category, notes, occurredOnInput ->
+                            val saved = viewModel.saveExpense(
+                                existingExpense = existingExpense,
                                 title = title,
                                 amountInput = amount,
                                 category = category,
                                 notes = notes,
+                                occurredOnInput = occurredOnInput,
                             )
                             if (saved) {
+                                expenseBeingEdited = null
                                 currentSection = SumptusSection.HISTORIAL
                             }
                             saved
+                        },
+                        onCancelEdit = {
+                            expenseBeingEdited = null
+                            currentSection = SumptusSection.HISTORIAL
                         },
                     )
 
                     SumptusSection.HISTORIAL -> HistoryScreen(
                         uiState = uiState,
                         onDeleteExpense = viewModel::deleteExpense,
-                        onOpenAddExpense = { currentSection = SumptusSection.NUEVO },
+                        onEditExpense = { expense ->
+                            expenseBeingEdited = expense
+                            currentSection = SumptusSection.NUEVO
+                        },
+                        onOpenAddExpense = {
+                            expenseBeingEdited = null
+                            currentSection = SumptusSection.NUEVO
+                        },
                     )
                 }
             }
@@ -203,12 +225,32 @@ private fun DashboardScreen(
 
 @Composable
 private fun AddExpenseScreen(
-    onSaveExpense: (String, String, ExpenseCategory, String) -> Boolean,
+    editingExpense: ExpenseEntry?,
+    onSaveExpense: (ExpenseEntry?, String, String, ExpenseCategory, String, String) -> Boolean,
+    onCancelEdit: () -> Unit,
 ) {
     var title by rememberSaveable { mutableStateOf("") }
     var amount by rememberSaveable { mutableStateOf("") }
     var notes by rememberSaveable { mutableStateOf("") }
     var selectedCategory by rememberSaveable { mutableStateOf(ExpenseCategory.COMIDA) }
+    var occurredOnInput by rememberSaveable { mutableStateOf(formatExpenseInputDate(LocalDate.now())) }
+    val isEditing = editingExpense != null
+
+    LaunchedEffect(editingExpense?.id) {
+        if (editingExpense == null) {
+            title = ""
+            amount = ""
+            notes = ""
+            selectedCategory = ExpenseCategory.COMIDA
+            occurredOnInput = formatExpenseInputDate(LocalDate.now())
+        } else {
+            title = editingExpense.title
+            amount = formatAmountInput(editingExpense.amountCents)
+            notes = editingExpense.notes
+            selectedCategory = editingExpense.category
+            occurredOnInput = formatExpenseInputDate(editingExpense.occurredOn)
+        }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -217,9 +259,17 @@ private fun AddExpenseScreen(
     ) {
         item {
             HeaderBlock(
-                kicker = "Nuevo gasto",
-                title = "Anota el movimiento mientras esta fresco",
-                subtitle = "El objetivo del MVP es que registrar te lleve menos de diez segundos.",
+                kicker = if (isEditing) "Editar gasto" else "Nuevo gasto",
+                title = if (isEditing) {
+                    "Ajusta el movimiento sin perder el historial"
+                } else {
+                    "Anota el movimiento mientras esta fresco"
+                },
+                subtitle = if (isEditing) {
+                    "Puedes corregir importe, fecha, categoria o notas y volver al historial."
+                } else {
+                    "El objetivo del MVP es que registrar te lleve menos de diez segundos."
+                },
             )
         }
 
@@ -249,6 +299,29 @@ private fun AddExpenseScreen(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         supportingText = { Text("Puedes escribir 12,50 o 12.50") },
                     )
+
+                    OutlinedTextField(
+                        value = occurredOnInput,
+                        onValueChange = { occurredOnInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Fecha") },
+                        singleLine = true,
+                        supportingText = { Text("Formato: 06/04/2026") },
+                    )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = { occurredOnInput = formatExpenseInputDate(LocalDate.now()) }) {
+                            Text("Hoy")
+                        }
+                        TextButton(onClick = { occurredOnInput = formatExpenseInputDate(LocalDate.now().minusDays(1)) }) {
+                            Text("Ayer")
+                        }
+                        if (isEditing) {
+                            TextButton(onClick = onCancelEdit) {
+                                Text("Cancelar")
+                            }
+                        }
+                    }
 
                     Text(
                         text = "Categoria",
@@ -281,17 +354,25 @@ private fun AddExpenseScreen(
 
                     Button(
                         onClick = {
-                            val saved = onSaveExpense(title, amount, selectedCategory, notes)
+                            val saved = onSaveExpense(
+                                editingExpense,
+                                title,
+                                amount,
+                                selectedCategory,
+                                notes,
+                                occurredOnInput,
+                            )
                             if (saved) {
                                 title = ""
                                 amount = ""
                                 notes = ""
                                 selectedCategory = ExpenseCategory.COMIDA
+                                occurredOnInput = formatExpenseInputDate(LocalDate.now())
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Guardar gasto")
+                        Text(if (isEditing) "Guardar cambios" else "Guardar gasto")
                     }
                 }
             }
@@ -303,6 +384,7 @@ private fun AddExpenseScreen(
 private fun HistoryScreen(
     uiState: SumptusUiState,
     onDeleteExpense: (String) -> Unit,
+    onEditExpense: (ExpenseEntry) -> Unit,
     onOpenAddExpense: () -> Unit,
 ) {
     LazyColumn(
@@ -314,7 +396,7 @@ private fun HistoryScreen(
             HeaderBlock(
                 kicker = "Historial",
                 title = "Todos tus movimientos recientes",
-                subtitle = "Puedes revisar y borrar entradas locales mientras definimos la siguiente iteracion.",
+                subtitle = "Puedes revisar, editar y borrar entradas locales mientras definimos la siguiente iteracion.",
             )
         }
 
@@ -326,6 +408,7 @@ private fun HistoryScreen(
             items(uiState.recentExpenses, key = { it.id }) { expense ->
                 ExpenseHistoryRow(
                     expense = expense,
+                    onEditExpense = { onEditExpense(expense) },
                     onDeleteExpense = { onDeleteExpense(expense.id) },
                 )
             }
@@ -671,6 +754,7 @@ private fun EmptyHistoryCard(onOpenAddExpense: () -> Unit) {
 @Composable
 private fun ExpenseHistoryRow(
     expense: ExpenseEntry,
+    onEditExpense: () -> Unit,
     onDeleteExpense: () -> Unit,
 ) {
     Card(
@@ -744,11 +828,19 @@ private fun ExpenseHistoryRow(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
-                IconButton(onClick = onDeleteExpense) {
-                    Icon(
-                        imageVector = Icons.Rounded.DeleteOutline,
-                        contentDescription = "Eliminar gasto",
-                    )
+                Row {
+                    IconButton(onClick = onEditExpense) {
+                        Icon(
+                            imageVector = Icons.Rounded.Edit,
+                            contentDescription = "Editar gasto",
+                        )
+                    }
+                    IconButton(onClick = onDeleteExpense) {
+                        Icon(
+                            imageVector = Icons.Rounded.DeleteOutline,
+                            contentDescription = "Eliminar gasto",
+                        )
+                    }
                 }
             }
         }
@@ -761,6 +853,12 @@ private fun formatCurrency(amountCents: Long): String {
     }
     return formatter.format(amountCents / 100.0)
 }
+
+private fun formatAmountInput(amountCents: Long): String = String.format(
+    Locale.US,
+    "%.2f",
+    amountCents / 100.0,
+)
 
 private fun categoryColor(category: ExpenseCategory): Color = when (category) {
     ExpenseCategory.HOGAR -> Color(0xFF355C7D)

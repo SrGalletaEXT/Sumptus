@@ -13,6 +13,7 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -65,11 +66,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         initialValue = SumptusUiState.empty(),
     )
 
-    fun addExpense(
+    fun saveExpense(
+        existingExpense: ExpenseEntry?,
         title: String,
         amountInput: String,
         category: ExpenseCategory,
         notes: String,
+        occurredOnInput: String,
     ): Boolean {
         val cleanTitle = title.trim()
         if (cleanTitle.isBlank()) {
@@ -83,17 +86,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return false
         }
 
+        val occurredOn = parseExpenseInputDate(occurredOnInput)
+        if (occurredOn == null) {
+            feedback.value = "Usa una fecha valida con formato 06/04/2026."
+            return false
+        }
+
         viewModelScope.launch {
-            repository.addExpense(
+            repository.upsertExpense(
                 ExpenseEntry(
+                    id = existingExpense?.id ?: UUID.randomUUID().toString(),
                     title = cleanTitle,
                     amountCents = amountCents,
                     category = category,
                     notes = notes.trim(),
-                    occurredOn = LocalDate.now(),
+                    occurredOn = occurredOn,
+                    createdAtEpochMillis = existingExpense?.createdAtEpochMillis ?: System.currentTimeMillis(),
                 ),
             )
-            feedback.value = "Gasto guardado en local."
+            feedback.value = if (existingExpense == null) {
+                "Gasto guardado en local."
+            } else {
+                "Movimiento actualizado."
+            }
         }
         return true
     }
@@ -142,7 +157,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             weekTotalCents = weekTotal,
             averageExpenseCents = averageExpense,
             expenseCount = expenses.size,
-            recentExpenses = expenses.take(12),
+            recentExpenses = expenses,
             categorySummaries = categorySummaries,
             insight = insight,
             feedbackMessage = feedbackMessage,
