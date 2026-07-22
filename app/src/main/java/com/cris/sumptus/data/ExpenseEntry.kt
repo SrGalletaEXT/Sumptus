@@ -13,7 +13,7 @@ data class ExpenseEntry(
     val id: String = UUID.randomUUID().toString(),
     val title: String,
     val amountCents: Long,
-    val category: ExpenseCategory,
+    val category: String,
     val notes: String,
     val occurredOn: LocalDate,
     val createdAtEpochMillis: Long = System.currentTimeMillis(),
@@ -22,7 +22,7 @@ data class ExpenseEntry(
         .put("id", id)
         .put("title", title)
         .put("amountCents", amountCents)
-        .put("category", category.name)
+        .put("category", category)
         .put("notes", notes)
         .put("occurredOn", occurredOn.format(DateTimeFormatter.ISO_LOCAL_DATE))
         .put("createdAtEpochMillis", createdAtEpochMillis)
@@ -33,7 +33,7 @@ data class ExpenseEntry(
                 id = json.optString("id").ifBlank { UUID.randomUUID().toString() },
                 title = json.optString("title"),
                 amountCents = json.getLong("amountCents"),
-                category = ExpenseCategory.fromName(json.optString("category")),
+                category = legacyCategoryNameToLabel(json.optString("category")),
                 notes = json.optString("notes"),
                 occurredOn = LocalDate.parse(json.getString("occurredOn")),
                 createdAtEpochMillis = json.optLong("createdAtEpochMillis", System.currentTimeMillis()),

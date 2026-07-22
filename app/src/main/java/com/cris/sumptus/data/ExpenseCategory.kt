@@ -1,16 +1,32 @@
 package com.cris.sumptus.data
 
-enum class ExpenseCategory(val label: String) {
-    HOGAR("Hogar"),
-    COMIDA("Comida"),
-    TRANSPORTE("Transporte"),
-    OCIO("Ocio"),
-    SALUD("Salud"),
-    SUSCRIPCIONES("Suscripciones"),
-    OTROS("Otros"),
-    ;
+import java.util.Locale
 
-    companion object {
-        fun fromName(value: String): ExpenseCategory = entries.firstOrNull { it.name == value } ?: OTROS
-    }
+fun normalizeCategoryName(rawValue: String): String {
+    val locale = Locale.forLanguageTag("es-ES")
+    return rawValue
+        .trim()
+        .replace(Regex("\\s+"), " ")
+        .split(" ")
+        .filter { it.isNotBlank() }
+        .joinToString(" ") { part ->
+            part.lowercase(locale).replaceFirstChar { char ->
+                if (char.isLowerCase()) {
+                    char.titlecase(locale)
+                } else {
+                    char.toString()
+                }
+            }
+        }
+}
+
+fun legacyCategoryNameToLabel(rawValue: String): String = when (rawValue.trim()) {
+    "HOGAR" -> "Hogar"
+    "COMIDA" -> "Comida"
+    "TRANSPORTE" -> "Transporte"
+    "OCIO" -> "Ocio"
+    "SALUD" -> "Salud"
+    "SUSCRIPCIONES" -> "Suscripciones"
+    "OTROS" -> "Otros"
+    else -> normalizeCategoryName(rawValue).ifBlank { "Otros" }
 }

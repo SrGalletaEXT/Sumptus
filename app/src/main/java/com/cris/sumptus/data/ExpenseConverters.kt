@@ -9,10 +9,4 @@ class ExpenseConverters {
 
     @TypeConverter
     fun epochDayToLocalDate(value: Long?): LocalDate? = value?.let(LocalDate::ofEpochDay)
-
-    @TypeConverter
-    fun expenseCategoryToName(value: ExpenseCategory?): String? = value?.name
-
-    @TypeConverter
-    fun nameToExpenseCategory(value: String?): ExpenseCategory? = value?.let(ExpenseCategory::fromName)
 }

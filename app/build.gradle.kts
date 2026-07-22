@@ -75,6 +75,7 @@ dependencies {
     implementation(libs.google.material)
     ksp(libs.androidx.room.compiler)
 
+    testImplementation(libs.junit)
     debugImplementation(platform(libs.androidx.compose.bom))
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
