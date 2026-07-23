@@ -2,6 +2,7 @@ package com.cris.sumptus.ui.theme
 
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
@@ -25,6 +26,23 @@ private val SumptusColors = lightColorScheme(
     onSurface = Ink,
     surfaceVariant = Mist,
     outline = Color(0xFFD9C8B9),
+)
+
+private val SumptusDarkColors = darkColorScheme(
+    primary = Color(0xFF95C0C7),
+    onPrimary = Color(0xFF12343D),
+    primaryContainer = Color(0xFF315964),
+    onPrimaryContainer = Color(0xFFE0F3F3),
+    secondary = Color(0xFF87C7B6),
+    onSecondary = Color(0xFF133D35),
+    secondaryContainer = Color(0xFF28564C),
+    onSecondaryContainer = Color(0xFFD2F2E7),
+    background = Color(0xFF171A19),
+    onBackground = Color(0xFFE8E5DF),
+    surface = Color(0xFF202523),
+    onSurface = Color(0xFFE8E5DF),
+    surfaceVariant = Color(0xFF303834),
+    outline = Color(0xFF9AA8A0),
 )
 
 private val SumptusTypography = Typography(
@@ -73,9 +91,9 @@ private val SumptusTypography = Typography(
 )
 
 @Composable
-fun SumptusTheme(content: @Composable () -> Unit) {
+fun SumptusTheme(darkTheme: Boolean, content: @Composable () -> Unit) {
     MaterialTheme(
-        colorScheme = SumptusColors,
+        colorScheme = if (darkTheme) SumptusDarkColors else SumptusColors,
         typography = SumptusTypography,
         content = content,
     )

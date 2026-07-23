@@ -27,6 +27,17 @@ data class CategorySpendSummary(
     val share: Float,
 )
 
+data class MonthExpenseComparison(
+    val month: YearMonth,
+    val totalCents: Long,
+    val categories: List<CategorySpendSummary>,
+)
+
+data class RecentExpense(
+    val expense: ExpenseEntry,
+    val balanceAfterCents: Long,
+)
+
 sealed interface TimelineEntry {
     val id: String
     val amountCents: Long
@@ -48,6 +59,38 @@ sealed interface TimelineEntry {
     }
 }
 
+internal fun buildRecentExpenses(
+    expenses: List<ExpenseEntry>,
+    extraEntries: List<ExtraEntry>,
+    monthlyBalanceAdjustments: Map<String, Long>,
+): List<RecentExpense> {
+    val balances = mutableMapOf<String, Long>()
+
+    (expenses.map { TimelineEntry.ExpenseItem(it) } + extraEntries.map { TimelineEntry.ExtraItem(it) })
+        .groupBy { YearMonth.from(it.occurredOn) }
+        .forEach { (month, entries) ->
+            var balance = monthlyBalanceAdjustments[month.toString()] ?: 0L
+            entries.forEach { entry ->
+                balance += if (entry is TimelineEntry.ExtraItem) entry.amountCents else -entry.amountCents
+            }
+
+            entries.sortedWith(compareByDescending<TimelineEntry> { it.createdAtEpochMillis }.thenByDescending { it.id })
+                .forEach { entry ->
+                    when (entry) {
+                        is TimelineEntry.ExpenseItem -> {
+                            balances[entry.id] = balance
+                            balance += entry.amountCents
+                        }
+                        is TimelineEntry.ExtraItem -> balance -= entry.amountCents
+                    }
+                }
+        }
+
+    return expenses
+        .sortedWith(compareByDescending<ExpenseEntry> { it.createdAtEpochMillis }.thenByDescending { it.id })
+        .map { expense -> RecentExpense(expense, balances.getValue(expense.id)) }
+}
+
 data class SumptusUiState(
     val selectedMonth: YearMonth,
     val monthLabel: String,
@@ -56,12 +99,12 @@ data class SumptusUiState(
     val monthNetCents: Long,
     val currentBalanceCents: Long,
     val balanceAdjustmentCents: Long,
-    val previousMonthExpenseTotalCents: Long,
-    val previousMonthNetCents: Long,
-    val expenseDeltaFromPreviousMonthCents: Long,
     val categories: List<String>,
-    val categorySummaries: List<CategorySpendSummary>,
+    val categoryColors: Map<String, Long>,
+    val lastThreeMonthExpenses: List<MonthExpenseComparison>,
+    val recentExpenses: List<RecentExpense>,
     val historyEntries: List<TimelineEntry>,
+    val isDarkTheme: Boolean,
     val feedbackMessage: String? = null,
 ) {
     companion object {
@@ -73,12 +116,12 @@ data class SumptusUiState(
             monthNetCents = 0L,
             currentBalanceCents = 0L,
             balanceAdjustmentCents = 0L,
-            previousMonthExpenseTotalCents = 0L,
-            previousMonthNetCents = 0L,
-            expenseDeltaFromPreviousMonthCents = 0L,
             categories = emptyList(),
-            categorySummaries = emptyList(),
+            categoryColors = emptyMap(),
+            lastThreeMonthExpenses = emptyList(),
+            recentExpenses = emptyList(),
             historyEntries = emptyList(),
+            isDarkTheme = false,
             feedbackMessage = null,
         )
     }
@@ -92,46 +135,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private data class SummaryInputs(
         val expenses: List<ExpenseEntry>,
         val categories: List<String>,
+        val categoryColors: Map<String, Long>,
         val extraEntries: List<ExtraEntry>,
-        val balanceAdjustmentCents: Long,
+        val monthlyBalanceAdjustments: Map<String, Long>,
         val selectedMonth: YearMonth,
     )
 
     private data class EntryInputs(
         val expenses: List<ExpenseEntry>,
         val categories: List<String>,
+        val categoryColors: Map<String, Long>,
         val extraEntries: List<ExtraEntry>,
     )
 
     private val entryInputs = combine(
         repository.expenses,
         repository.categories,
+        repository.categoryColors,
         repository.extraEntries,
-    ) { expenses, categories, extraEntries ->
-        EntryInputs(expenses, categories, extraEntries)
+    ) { expenses, categories, categoryColors, extraEntries ->
+        EntryInputs(expenses, categories, categoryColors, extraEntries)
     }
 
     private val summaryInputs = combine(
         entryInputs,
-        repository.balanceAdjustmentCents,
+        repository.monthlyBalanceAdjustments,
         selectedMonth,
-    ) { entries, balanceAdjustmentCents, month ->
+    ) { entries, monthlyBalanceAdjustments, month ->
         SummaryInputs(
             expenses = entries.expenses,
             categories = entries.categories,
+            categoryColors = entries.categoryColors,
             extraEntries = entries.extraEntries,
-            balanceAdjustmentCents = balanceAdjustmentCents,
+            monthlyBalanceAdjustments = monthlyBalanceAdjustments,
             selectedMonth = month,
         )
     }
 
-    val uiState: StateFlow<SumptusUiState> = combine(summaryInputs, feedback) { inputs, message ->
+    val uiState: StateFlow<SumptusUiState> = combine(summaryInputs, feedback, repository.darkTheme) { inputs, message, isDarkTheme ->
         buildUiState(
             expenses = inputs.expenses,
             storedCategories = inputs.categories,
+            categoryColors = inputs.categoryColors,
             extraEntries = inputs.extraEntries,
-            balanceAdjustmentCents = inputs.balanceAdjustmentCents,
+            monthlyBalanceAdjustments = inputs.monthlyBalanceAdjustments,
             selectedMonth = inputs.selectedMonth,
+            isDarkTheme = isDarkTheme,
             feedbackMessage = message,
         )
     }.stateIn(
@@ -248,7 +297,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val state = uiState.value
         val calculatedWithoutAdjustment = state.currentBalanceCents - state.balanceAdjustmentCents
         viewModelScope.launch {
-            repository.setBalanceAdjustmentCents(targetBalanceCents - calculatedWithoutAdjustment)
+            repository.setMonthlyBalanceAdjustmentCents(
+                state.selectedMonth,
+                targetBalanceCents - calculatedWithoutAdjustment,
+            )
             feedback.value = "Saldo ajustado."
         }
         return true
@@ -277,6 +329,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.deleteCategory(categoryName)
             feedback.value = "Categoría eliminada."
+        }
+    }
+
+    fun setCategoryColor(categoryName: String, colorArgb: Long) {
+        viewModelScope.launch {
+            repository.setCategoryColor(categoryName, colorArgb)
+        }
+    }
+
+    fun setDarkTheme(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.setDarkTheme(enabled)
         }
     }
 
@@ -332,27 +396,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun buildUiState(
         expenses: List<ExpenseEntry>,
         storedCategories: List<String>,
+        categoryColors: Map<String, Long>,
         extraEntries: List<ExtraEntry>,
-        balanceAdjustmentCents: Long,
+        monthlyBalanceAdjustments: Map<String, Long>,
         selectedMonth: YearMonth,
+        isDarkTheme: Boolean,
         feedbackMessage: String?,
     ): SumptusUiState {
         val monthExpenses = expenses.filter { YearMonth.from(it.occurredOn) == selectedMonth }
         val monthExtras = extraEntries.filter { YearMonth.from(it.occurredOn) == selectedMonth }
-        val previousMonth = selectedMonth.minusMonths(1)
-        val previousMonthExpenseTotal = expenses
-            .filter { YearMonth.from(it.occurredOn) == previousMonth }
-            .sumOf { it.amountCents }
-        val previousMonthExtraTotal = extraEntries
-            .filter { YearMonth.from(it.occurredOn) == previousMonth }
-            .sumOf { it.amountCents }
-
         val monthExpenseTotal = monthExpenses.sumOf { it.amountCents }
         val monthExtraTotal = monthExtras.sumOf { it.amountCents }
         val monthIncomeTotal = monthExtraTotal
-        val previousMonthIncomeTotal = previousMonthExtraTotal
-        val allExpenseTotal = expenses.sumOf { it.amountCents }
-        val allExtraTotal = extraEntries.sumOf { it.amountCents }
+        val balanceAdjustmentCents = monthlyBalanceAdjustments[selectedMonth.toString()] ?: 0L
+        val currentBalanceCents = balanceAdjustmentCents + monthIncomeTotal - monthExpenseTotal
 
         return SumptusUiState(
             selectedMonth = selectedMonth,
@@ -360,14 +417,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             monthExpenseTotalCents = monthExpenseTotal,
             monthIncomeTotalCents = monthIncomeTotal,
             monthNetCents = monthIncomeTotal - monthExpenseTotal,
-            currentBalanceCents = balanceAdjustmentCents + allExtraTotal - allExpenseTotal,
+            currentBalanceCents = currentBalanceCents,
             balanceAdjustmentCents = balanceAdjustmentCents,
-            previousMonthExpenseTotalCents = previousMonthExpenseTotal,
-            previousMonthNetCents = previousMonthIncomeTotal - previousMonthExpenseTotal,
-            expenseDeltaFromPreviousMonthCents = monthExpenseTotal - previousMonthExpenseTotal,
             categories = storedCategories,
-            categorySummaries = buildCategorySummaries(monthExpenses, monthExpenseTotal),
+            categoryColors = categoryColors,
+            lastThreeMonthExpenses = buildLastThreeMonthExpenses(expenses, selectedMonth),
+            recentExpenses = buildRecentExpenses(expenses, extraEntries, monthlyBalanceAdjustments),
             historyEntries = buildHistoryEntries(monthExpenses, monthExtras),
+            isDarkTheme = isDarkTheme,
             feedbackMessage = feedbackMessage,
         )
     }
@@ -391,6 +448,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             .sortedByDescending { it.totalCents }
+    }
+
+    private fun buildLastThreeMonthExpenses(
+        expenses: List<ExpenseEntry>,
+        selectedMonth: YearMonth,
+    ): List<MonthExpenseComparison> = (2L downTo 0L).map { offset ->
+        val month = selectedMonth.minusMonths(offset)
+        val monthExpenses = expenses.filter { YearMonth.from(it.occurredOn) == month }
+        val totalCents = monthExpenses.sumOf { it.amountCents }
+        MonthExpenseComparison(
+            month = month,
+            totalCents = totalCents,
+            categories = buildCategorySummaries(monthExpenses, totalCents),
+        )
     }
 
     private fun buildHistoryEntries(

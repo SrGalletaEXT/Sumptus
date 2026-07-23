@@ -12,10 +12,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -33,6 +31,7 @@ import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Settings
@@ -76,6 +75,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cris.sumptus.CategorySpendSummary
 import com.cris.sumptus.MainViewModel
+import com.cris.sumptus.MonthExpenseComparison
+import com.cris.sumptus.RecentExpense
 import com.cris.sumptus.SumptusUiState
 import com.cris.sumptus.TimelineEntry
 import com.cris.sumptus.data.ExpenseEntry
@@ -111,6 +112,9 @@ private sealed interface EditorTarget {
     data class ExpenseTarget(val expense: ExpenseEntry) : EditorTarget
     data class ExtraTarget(val extra: ExtraEntry) : EditorTarget
 }
+
+private val expenseColor = Color(0xFFB25D66)
+private val incomeColor = Color(0xFF4E8063)
 
 @Composable
 fun SumptusApp(viewModel: MainViewModel = viewModel()) {
@@ -222,6 +226,8 @@ fun SumptusApp(viewModel: MainViewModel = viewModel()) {
                     uiState = uiState,
                     onAddCategory = viewModel::addCategory,
                     onDeleteCategory = viewModel::deleteCategory,
+                    onSetCategoryColor = viewModel::setCategoryColor,
+                    onSetDarkTheme = viewModel::setDarkTheme,
                     onExportBackup = viewModel::exportBackup,
                     onImportBackup = viewModel::importBackup,
                 )
@@ -244,7 +250,7 @@ private fun SummaryScreen(
     if (editingBalance) {
         AlertDialog(
             onDismissRequest = { editingBalance = false },
-            title = { Text("Saldo actual") },
+            title = { Text("Saldo de ${uiState.monthLabel}") },
             text = {
                 OutlinedTextField(
                     value = balanceInput,
@@ -289,33 +295,24 @@ private fun SummaryScreen(
         }
 
         item {
-            Column(horizontalAlignment = Alignment.End) {
-                MetricGrid(
-                    primary = MetricValue("Saldo", formatCurrency(uiState.currentBalanceCents)),
-                    secondary = listOf(
-                        MetricValue("Gastado", formatCurrency(uiState.monthExpenseTotalCents)),
-                        MetricValue("Ingresos", formatCurrency(uiState.monthIncomeTotalCents)),
-                        MetricValue("Neto", formatSignedCurrency(uiState.monthNetCents)),
-                    ),
-                    onEditPrimary = {
-                        balanceInput = formatAmountInput(uiState.currentBalanceCents)
-                        editingBalance = true
-                    },
-                )
-            }
-        }
-
-        item {
-            MonthComparisonCard(
-                previousMonthLabel = formatShortMonth(uiState.selectedMonth.minusMonths(1)),
-                previousMonthExpenseTotalCents = uiState.previousMonthExpenseTotalCents,
-                previousMonthNetCents = uiState.previousMonthNetCents,
-                expenseDeltaCents = uiState.expenseDeltaFromPreviousMonthCents,
+            SummaryTotalsCard(
+                balanceCents = uiState.currentBalanceCents,
+                expenseCents = uiState.monthExpenseTotalCents,
+                incomeCents = uiState.monthIncomeTotalCents,
+                netCents = uiState.monthNetCents,
+                onEditBalance = {
+                    balanceInput = formatAmountInput(uiState.currentBalanceCents)
+                    editingBalance = true
+                },
             )
         }
 
         item {
-            CategoryBreakdownCard(uiState.categorySummaries)
+            ThreeMonthExpenseCard(uiState.lastThreeMonthExpenses, uiState.categoryColors)
+        }
+
+        item {
+            RecentExpensesCard(uiState.recentExpenses, uiState.categoryColors)
         }
 
     }
@@ -465,7 +462,7 @@ private fun AddEntryScreen(
                                             onClick = { selectedCategory = category },
                                             label = { Text(category) },
                                             colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = categoryColor(category).copy(alpha = 0.18f),
+                                                selectedContainerColor = categoryColor(category, uiState.categoryColors).copy(alpha = 0.18f),
                                                 selectedLabelColor = MaterialTheme.colorScheme.onSurface,
                                             ),
                                         )
@@ -581,7 +578,8 @@ private fun HistoryScreen(
                     HistoryGroupHeader(
                         title = "Sueldo",
                         totalCents = salaries.sumOf { it.amountCents },
-                        color = Color(0xFF2E7D32),
+                        color = incomeColor,
+                        amountColor = incomeColor,
                         expanded = "salary" in expandedGroups,
                         onToggle = {
                             if ("salary" in expandedGroups) expandedGroups.remove("salary") else expandedGroups.add("salary")
@@ -590,7 +588,7 @@ private fun HistoryScreen(
                 }
                 if ("salary" in expandedGroups) {
                     items(salaries, key = ::timelineKey) { entry ->
-                        HistoryRow(entry, onEdit = { onEditEntry(entry) }, onDelete = { onDeleteEntry(entry) })
+                        HistoryRow(entry, uiState.categoryColors, onEdit = { onEditEntry(entry) }, onDelete = { onDeleteEntry(entry) })
                     }
                 }
             }
@@ -600,7 +598,8 @@ private fun HistoryScreen(
                     HistoryGroupHeader(
                         title = "Extras",
                         totalCents = extras.sumOf { it.amountCents },
-                        color = Color(0xFF2E7D32),
+                        color = incomeColor,
+                        amountColor = incomeColor,
                         expanded = "extra" in expandedGroups,
                         onToggle = {
                             if ("extra" in expandedGroups) expandedGroups.remove("extra") else expandedGroups.add("extra")
@@ -609,7 +608,7 @@ private fun HistoryScreen(
                 }
                 if ("extra" in expandedGroups) {
                     items(extras, key = ::timelineKey) { entry ->
-                        HistoryRow(entry, onEdit = { onEditEntry(entry) }, onDelete = { onDeleteEntry(entry) })
+                        HistoryRow(entry, uiState.categoryColors, onEdit = { onEditEntry(entry) }, onDelete = { onDeleteEntry(entry) })
                     }
                 }
             }
@@ -620,7 +619,8 @@ private fun HistoryScreen(
                     HistoryGroupHeader(
                         title = category,
                         totalCents = entries.sumOf { it.amountCents },
-                        color = categoryColor(category),
+                        color = categoryColor(category, uiState.categoryColors),
+                        amountColor = expenseColor,
                         expanded = groupId in expandedGroups,
                         onToggle = {
                             if (groupId in expandedGroups) expandedGroups.remove(groupId) else expandedGroups.add(groupId)
@@ -629,7 +629,7 @@ private fun HistoryScreen(
                 }
                 if (groupId in expandedGroups) {
                     items(entries, key = ::timelineKey) { entry ->
-                        HistoryRow(entry, onEdit = { onEditEntry(entry) }, onDelete = { onDeleteEntry(entry) })
+                        HistoryRow(entry, uiState.categoryColors, onEdit = { onEditEntry(entry) }, onDelete = { onDeleteEntry(entry) })
                     }
                 }
             }
@@ -642,10 +642,13 @@ private fun SettingsScreen(
     uiState: SumptusUiState,
     onAddCategory: (String) -> Boolean,
     onDeleteCategory: (String) -> Unit,
+    onSetCategoryColor: (String, Long) -> Unit,
+    onSetDarkTheme: (Boolean) -> Unit,
     onExportBackup: (Uri) -> Unit,
     onImportBackup: (Uri) -> Unit,
 ) {
     var newCategoryInput by rememberSaveable { mutableStateOf("") }
+    var categoryColorEditor by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json"),
@@ -691,6 +694,11 @@ private fun SettingsScreen(
                     modifier = Modifier.padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
+                    FilterChip(
+                        selected = uiState.isDarkTheme,
+                        onClick = { onSetDarkTheme(!uiState.isDarkTheme) },
+                        label = { Text("Modo noche") },
+                    )
                     OutlinedTextField(
                         value = newCategoryInput,
                         onValueChange = { newCategoryInput = it },
@@ -713,18 +721,47 @@ private fun SettingsScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         uiState.categories.forEach { category ->
-                            Surface(
-                                shape = RoundedCornerShape(999.dp),
-                                color = categoryColor(category).copy(alpha = 0.14f),
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = category,
-                                        modifier = Modifier.padding(start = 12.dp),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                    IconButton(onClick = { onDeleteCategory(category) }) {
-                                        Icon(Icons.Rounded.DeleteOutline, contentDescription = "Eliminar $category")
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Surface(
+                                    modifier = Modifier.clickable {
+                                        categoryColorEditor = if (categoryColorEditor == category) null else category
+                                    },
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = categoryColor(category, uiState.categoryColors).copy(alpha = 0.14f),
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .padding(start = 10.dp)
+                                                .size(10.dp)
+                                                .clip(CircleShape)
+                                                .background(categoryColor(category, uiState.categoryColors)),
+                                        )
+                                        Text(
+                                            text = category,
+                                            modifier = Modifier.padding(start = 8.dp),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                        )
+                                        IconButton(onClick = { onDeleteCategory(category) }) {
+                                            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Eliminar $category")
+                                        }
+                                    }
+                                }
+                                if (categoryColorEditor == category) {
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                                    ) {
+                                        categoryColorPalette.forEach { colorArgb ->
+                                            val color = Color(colorArgb.toInt())
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(if (categoryColor(category, uiState.categoryColors) == color) 28.dp else 22.dp)
+                                                    .clip(CircleShape)
+                                                    .background(color)
+                                                    .clickable { onSetCategoryColor(category, colorArgb) },
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -804,240 +841,231 @@ private fun MonthSelectorCard(
 }
 
 @Composable
-private fun MetricGrid(
-    primary: MetricValue,
-    secondary: List<MetricValue>,
-    onEditPrimary: () -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onEditPrimary),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary),
-        ) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        text = primary.label,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f),
-                    )
-                    Text(
-                        text = "Editar",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f),
-                    )
-                }
-                Text(
-                    text = primary.value,
-                    style = MaterialTheme.typography.displayMedium,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    fontWeight = FontWeight.ExtraBold,
-                )
-            }
-        }
-
-        secondary.chunked(2).forEach { metrics ->
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                metrics.forEach { metric ->
-                    MetricCard(metric = metric, modifier = Modifier.weight(1f))
-                }
-                if (metrics.size == 1) {
-                    Spacer(modifier = Modifier.weight(1f))
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MetricCard(
-    metric: MetricValue,
-    modifier: Modifier = Modifier,
+private fun SummaryTotalsCard(
+    balanceCents: Long,
+    expenseCents: Long,
+    incomeCents: Long,
+    netCents: Long,
+    onEditBalance: () -> Unit,
 ) {
     Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(
-                text = metric.label,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
-            )
-            Text(
-                text = metric.value,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-        }
-    }
-}
-
-@Composable
-private fun MonthComparisonCard(
-    previousMonthLabel: String,
-    previousMonthExpenseTotalCents: Long,
-    previousMonthNetCents: Long,
-    expenseDeltaCents: Long,
-) {
-    Card(
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text(
-                text = "Comparación",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-            ComparisonRow("Mes anterior", previousMonthLabel)
-            ComparisonRow("Gastado", formatCurrency(previousMonthExpenseTotalCents))
-            ComparisonRow("Neto", formatSignedCurrency(previousMonthNetCents))
-            ComparisonRow("Cambio", formatSignedCurrency(expenseDeltaCents))
-        }
-    }
-}
-
-@Composable
-private fun ComparisonRow(
-    label: String,
-    value: String,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f),
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
-@Composable
-private fun CategoryBreakdownCard(summaries: List<CategorySpendSummary>) {
-    Card(
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-    ) {
-        Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text(
-                text = "Categorías",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-            )
-
-            if (summaries.isEmpty()) {
-                Text(
-                    text = "Sin gastos en este mes.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            } else {
-                CategoryDistribution(summaries)
-                summaries.forEach { summary ->
-                    CategoryBar(summary)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CategoryDistribution(summaries: List<CategorySpendSummary>) {
-    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(16.dp)
-            .clip(RoundedCornerShape(999.dp)),
+            .clickable(onClick = onEditBalance),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
-        summaries.forEach { summary ->
-            Box(
-                modifier = Modifier
-                    .weight(summary.share.coerceAtLeast(0.03f))
-                    .fillMaxHeight()
-                    .background(categoryColor(summary.category)),
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Saldo", style = MaterialTheme.typography.labelLarge)
+                Text("Editar", style = MaterialTheme.typography.labelLarge)
+            }
+            Text(
+                text = formatCurrency(balanceCents),
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                SummaryMetric("Gastos", formatCurrency(expenseCents), expenseColor, Modifier.weight(1f))
+                SummaryMetric("Ingresos", formatCurrency(incomeCents), incomeColor, Modifier.weight(1f))
+            }
+            SummaryMetric(
+                label = "Neto",
+                value = formatSignedCurrency(netCents),
+                color = if (netCents >= 0L) incomeColor else expenseColor,
+                modifier = Modifier.fillMaxWidth(),
             )
         }
     }
 }
 
 @Composable
-private fun CategoryBar(summary: CategorySpendSummary) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+private fun SummaryMetric(
+    label: String,
+    value: String,
+    color: Color,
+    modifier: Modifier,
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, style = MaterialTheme.typography.labelLarge, color = color)
+        Text(value, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = color)
+    }
+}
+
+@Composable
+private fun ThreeMonthExpenseCard(
+    comparisons: List<MonthExpenseComparison>,
+    categoryColors: Map<String, Long>,
+) {
+    val expandedMonths = remember { mutableStateListOf<String>() }
+
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Box(
+            Text("Gasto por mes", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            comparisons.asReversed().forEach { comparison ->
+                val key = comparison.month.toString()
+                val expanded = key in expandedMonths
+                Row(
                     modifier = Modifier
-                        .size(12.dp)
-                        .clip(CircleShape)
-                        .background(categoryColor(summary.category)),
-                )
-                Text(
-                    text = summary.category,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "${(summary.share * 100).toInt()}%",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
-                )
-                Text(
-                    text = formatCurrency(summary.totalCents),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
+                        .fillMaxWidth()
+                        .clickable {
+                            if (expanded) expandedMonths.remove(key) else expandedMonths.add(key)
+                        }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(formatShortMonth(comparison.month), modifier = Modifier.weight(1f))
+                    Text(
+                        formatCurrency(comparison.totalCents),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = expenseColor,
+                    )
+                    Icon(
+                        imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = if (expanded) "Ocultar categorías" else "Mostrar categorías",
+                        tint = expenseColor,
+                    )
+                }
+                if (expanded) {
+                    if (comparison.categories.isEmpty()) {
+                        Text("Sin gastos", style = MaterialTheme.typography.bodyMedium)
+                    } else {
+                        comparison.categories.forEach { category ->
+                            ExpenseCategoryRow(category, categoryColors)
+                        }
+                    }
+                }
             }
         }
+    }
+}
 
+@Composable
+private fun ExpenseCategoryRow(
+    summary: CategorySpendSummary,
+    categoryColors: Map<String, Long>,
+) {
+    val color = categoryColor(summary.category, categoryColors)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(summary.category, style = MaterialTheme.typography.bodyMedium, color = color)
+            Text(formatCurrency(summary.totalCents), style = MaterialTheme.typography.bodyMedium, color = expenseColor)
+        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(6.dp)
+                .height(4.dp)
                 .clip(RoundedCornerShape(999.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(color.copy(alpha = 0.14f)),
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth(summary.share.coerceIn(0.04f, 1f))
-                    .height(6.dp)
+                    .height(4.dp)
                     .clip(RoundedCornerShape(999.dp))
-                    .background(categoryColor(summary.category)),
+                    .background(color),
+            )
+        }
+    }
+}
+
+@Composable
+private fun RecentExpensesCard(
+    expenses: List<RecentExpense>,
+    categoryColors: Map<String, Long>,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val visibleExpenses = if (expanded) expenses else expenses.take(3)
+
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(
+            modifier = Modifier.padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("Últimos gastos", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            if (visibleExpenses.isEmpty()) {
+                Text("Sin gastos", style = MaterialTheme.typography.bodyMedium)
+            } else {
+                visibleExpenses.forEach { expense ->
+                    RecentExpenseRow(expense, categoryColors)
+                }
+            }
+            if (expenses.size > 3) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    IconButton(onClick = { expanded = !expanded }) {
+                        Icon(
+                            imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                            contentDescription = if (expanded) "Mostrar menos gastos" else "Mostrar más gastos",
+                            tint = expenseColor,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentExpenseRow(
+    recentExpense: RecentExpense,
+    categoryColors: Map<String, Long>,
+) {
+    val expense = recentExpense.expense
+    val color = categoryColor(expense.category, categoryColors)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(color),
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                expense.notes.ifBlank { expense.category },
+                style = MaterialTheme.typography.bodyLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(expense.category, style = MaterialTheme.typography.bodySmall, color = color)
+                Text(
+                    expense.occurredOn.format(DateTimeFormatter.ofPattern("d MMM", Locale.forLanguageTag("es-ES"))),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                )
+            }
+        }
+        Column(
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                formatCurrency(expense.amountCents),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = expenseColor,
+            )
+            Text(
+                formatCurrency(recentExpense.balanceAfterCents),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
             )
         }
     }
@@ -1046,12 +1074,17 @@ private fun CategoryBar(summary: CategorySpendSummary) {
 @Composable
 private fun HistoryRow(
     entry: TimelineEntry,
+    categoryColors: Map<String, Long>,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val amountColor = when (entry) {
-        is TimelineEntry.ExpenseItem -> MaterialTheme.colorScheme.onSurface
-        is TimelineEntry.ExtraItem -> Color(0xFF2E7D32)
+        is TimelineEntry.ExpenseItem -> expenseColor
+        is TimelineEntry.ExtraItem -> incomeColor
+    }
+    val subtitleColor = when (entry) {
+        is TimelineEntry.ExpenseItem -> categoryColor(entry.expense.category, categoryColors)
+        is TimelineEntry.ExtraItem -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f)
     }
 
     Card(
@@ -1069,12 +1102,12 @@ private fun HistoryRow(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(CircleShape)
-                    .background(historyAccent(entry).copy(alpha = 0.14f)),
+                    .background(historyAccent(entry, categoryColors).copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = historyBadge(entry),
-                    color = historyAccent(entry),
+                    color = historyAccent(entry, categoryColors),
                     fontWeight = FontWeight.Bold,
                 )
             }
@@ -1093,7 +1126,7 @@ private fun HistoryRow(
                 Text(
                     text = historySubtitle(entry),
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
+                    color = subtitleColor,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -1136,6 +1169,7 @@ private fun HistoryGroupHeader(
     title: String,
     totalCents: Long,
     color: Color,
+    amountColor: Color,
     expanded: Boolean,
     onToggle: () -> Unit,
 ) {
@@ -1162,11 +1196,13 @@ private fun HistoryGroupHeader(
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
+                color = color,
             )
             Text(
                 text = formatCurrency(totalCents),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
+                color = amountColor,
             )
             Icon(
                 imageVector = if (expanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
@@ -1243,11 +1279,6 @@ private fun DateWheelButton(
     }
 }
 
-private data class MetricValue(
-    val label: String,
-    val value: String,
-)
-
 private fun visibleMonths(selectedMonth: YearMonth): List<YearMonth> {
     val currentMonth = YearMonth.now()
     return listOf(-2L, -1L, 0L, 1L, 2L)
@@ -1266,9 +1297,9 @@ private fun historyBadge(entry: TimelineEntry): String = when (entry) {
     is TimelineEntry.ExtraItem -> "+"
 }
 
-private fun historyAccent(entry: TimelineEntry): Color = when (entry) {
-    is TimelineEntry.ExpenseItem -> categoryColor(entry.expense.category)
-    is TimelineEntry.ExtraItem -> Color(0xFF2E7D32)
+private fun historyAccent(entry: TimelineEntry, categoryColors: Map<String, Long>): Color = when (entry) {
+    is TimelineEntry.ExpenseItem -> categoryColor(entry.expense.category, categoryColors)
+    is TimelineEntry.ExtraItem -> incomeColor
 }
 
 private fun historyTitle(entry: TimelineEntry): String = when (entry) {
@@ -1313,16 +1344,19 @@ private fun formatShortMonth(month: YearMonth): String {
     }
 }
 
-private fun categoryColor(category: String): Color {
-    val palette = listOf(
-        Color(0xFF355C7D),
-        Color(0xFFE56B6F),
-        Color(0xFF577590),
-        Color(0xFFF4A261),
-        Color(0xFF2A9D8F),
-        Color(0xFF8D6A9F),
-        Color(0xFF6C757D),
-        Color(0xFFBC6C25),
-    )
-    return palette[category.lowercase().hashCode().absoluteValue % palette.size]
+private val categoryColorPalette = listOf(
+    0xFFC87870L,
+    0xFF5C8E7EL,
+    0xFF6E86B3L,
+    0xFFC58A50L,
+    0xFF9B709DL,
+    0xFF4E9A9AL,
+    0xFFB56F8EL,
+    0xFF788769L,
+)
+
+private fun categoryColor(category: String, categoryColors: Map<String, Long>): Color {
+    val colorArgb = categoryColors[category.lowercase(Locale.ROOT)]
+        ?: categoryColorPalette[category.lowercase(Locale.ROOT).hashCode().absoluteValue % categoryColorPalette.size]
+    return Color(colorArgb.toInt())
 }
