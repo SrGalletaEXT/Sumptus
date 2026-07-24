@@ -115,6 +115,7 @@ internal fun buildBudgetOverview(
     expenses: List<ExpenseEntry>,
     categories: List<String>,
     budgetChanges: Map<String, Long>,
+    generalExtraLimitChanges: Map<String, Long>,
     selectedMonth: YearMonth,
 ): BudgetOverview {
     val categoryChanges = categories.associateWith { category ->
@@ -134,7 +135,10 @@ internal fun buildBudgetOverview(
             changes.lastOrNull { it.first <= month }?.second?.let { category to it }
         }.toMap()
         val baseCents = bases.values.sum()
-        val spentCents = expenses.filter { YearMonth.from(it.occurredOn) == month }.sumOf { it.amountCents }
+        val budgetedCategoryKeys = bases.keys.map(::categoryColorKey).toSet()
+        val spentCents = expenses
+            .filter { YearMonth.from(it.occurredOn) == month && categoryColorKey(it.category) in budgetedCategoryKeys }
+            .sumOf { it.amountCents }
         val remainingCents = baseCents + carryoverCents - spentCents
         if (month == selectedMonth) {
             return BudgetOverview(
@@ -155,11 +159,18 @@ internal fun buildBudgetOverview(
                 }.sortedBy { it.category },
             )
         }
-        carryoverCents = remainingCents
+        carryoverCents = effectiveGeneralExtraLimit(generalExtraLimitChanges, month)
+            ?.let { remainingCents.coerceAtMost(it) }
+            ?: remainingCents
         month = month.plusMonths(1)
     }
     return BudgetOverview.empty()
 }
+
+internal fun effectiveGeneralExtraLimit(changes: Map<String, Long>, month: YearMonth): Long? =
+    changes.mapNotNull { (changeMonth, amountCents) ->
+        YearMonth.parse(changeMonth).takeIf { it <= month }?.let { it to amountCents }
+    }.maxByOrNull { it.first }?.second
 
 data class SumptusUiState(
     val selectedMonth: YearMonth,
@@ -172,6 +183,7 @@ data class SumptusUiState(
     val categories: List<String>,
     val categoryColors: Map<String, Long>,
     val budgetOverview: BudgetOverview,
+    val generalExtraLimitCents: Long?,
     val lastThreeMonthExpenses: List<MonthExpenseComparison>,
     val recentExpenses: List<RecentExpense>,
     val historyEntries: List<TimelineEntry>,
@@ -190,6 +202,7 @@ data class SumptusUiState(
             categories = emptyList(),
             categoryColors = emptyMap(),
             budgetOverview = BudgetOverview.empty(),
+            generalExtraLimitCents = null,
             lastThreeMonthExpenses = emptyList(),
             recentExpenses = emptyList(),
             historyEntries = emptyList(),
@@ -210,6 +223,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val categoryColors: Map<String, Long>,
         val extraEntries: List<ExtraEntry>,
         val budgetChanges: Map<String, Long>,
+        val generalExtraLimitChanges: Map<String, Long>,
         val monthlyBalanceAdjustments: Map<String, Long>,
         val selectedMonth: YearMonth,
     )
@@ -235,14 +249,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val summaryInputs = combine(
         entryInputs,
         repository.monthlyBalanceAdjustments,
+        repository.generalExtraLimitChanges,
         selectedMonth,
-    ) { entries, monthlyBalanceAdjustments, month ->
+    ) { entries, monthlyBalanceAdjustments, generalExtraLimitChanges, month ->
         SummaryInputs(
             expenses = entries.expenses,
             categories = entries.categories,
             categoryColors = entries.categoryColors,
             extraEntries = entries.extraEntries,
             budgetChanges = entries.budgetChanges,
+            generalExtraLimitChanges = generalExtraLimitChanges,
             monthlyBalanceAdjustments = monthlyBalanceAdjustments,
             selectedMonth = month,
         )
@@ -255,6 +271,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             categoryColors = inputs.categoryColors,
             extraEntries = inputs.extraEntries,
             budgetChanges = inputs.budgetChanges,
+            generalExtraLimitChanges = inputs.generalExtraLimitChanges,
             monthlyBalanceAdjustments = inputs.monthlyBalanceAdjustments,
             selectedMonth = inputs.selectedMonth,
             isDarkTheme = isDarkTheme,
@@ -436,6 +453,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
+    fun setGeneralExtraLimit(amountInput: String): Boolean {
+        val amountCents = if (amountInput.isBlank()) null else parseAmountToCents(amountInput)
+        if (amountInput.isNotBlank() && (amountCents == null || amountCents < 0L)) {
+            feedback.value = "Límite no válido."
+            return false
+        }
+
+        viewModelScope.launch {
+            repository.setGeneralExtraLimitCents(uiState.value.selectedMonth, amountCents)
+            feedback.value = "Límite guardado."
+        }
+        return true
+    }
+
     fun exportBackup(uri: Uri) {
         viewModelScope.launch {
             runCatching {
@@ -491,6 +522,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         categoryColors: Map<String, Long>,
         extraEntries: List<ExtraEntry>,
         budgetChanges: Map<String, Long>,
+        generalExtraLimitChanges: Map<String, Long>,
         monthlyBalanceAdjustments: Map<String, Long>,
         selectedMonth: YearMonth,
         isDarkTheme: Boolean,
@@ -514,7 +546,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             balanceAdjustmentCents = balanceAdjustmentCents,
             categories = storedCategories,
             categoryColors = categoryColors,
-            budgetOverview = buildBudgetOverview(expenses, storedCategories, budgetChanges, selectedMonth),
+            budgetOverview = buildBudgetOverview(
+                expenses,
+                storedCategories,
+                budgetChanges,
+                generalExtraLimitChanges,
+                selectedMonth,
+            ),
+            generalExtraLimitCents = effectiveGeneralExtraLimit(generalExtraLimitChanges, selectedMonth),
             lastThreeMonthExpenses = buildLastThreeMonthExpenses(expenses, selectedMonth),
             recentExpenses = buildRecentExpenses(expenses, extraEntries, monthlyBalanceAdjustments),
             historyEntries = buildHistoryEntries(monthExpenses, monthExtras),

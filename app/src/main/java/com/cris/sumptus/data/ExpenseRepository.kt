@@ -32,6 +32,8 @@ private val extraEntriesKey = stringPreferencesKey("extra_entries_json")
 private val balanceAdjustmentCentsKey = longPreferencesKey("balance_adjustment_cents")
 private val monthlyBalanceAdjustmentsKey = stringPreferencesKey("monthly_balance_adjustments_json")
 private val budgetChangesKey = stringPreferencesKey("budget_changes_json")
+private val generalExtraLimitCentsKey = longPreferencesKey("general_extra_limit_cents")
+private val generalExtraLimitChangesKey = stringPreferencesKey("general_extra_limit_changes_json")
 private val monthlyBalancesMigratedKey = booleanPreferencesKey("monthly_balances_migrated")
 private val defaultCategoriesRemovedKey = booleanPreferencesKey("default_categories_removed")
 private val retiredDefaultCategories = setOf(
@@ -52,6 +54,8 @@ private data class BackupData(
     val categoryColors: Map<String, Long>,
     val monthlyBalanceAdjustments: Map<String, Long>,
     val budgetChanges: Map<String, Long>,
+    val generalExtraLimitChanges: Map<String, Long>,
+    val legacyGeneralExtraLimitCents: Long?,
     val legacyBalanceAdjustmentCents: Long?,
 )
 
@@ -81,6 +85,7 @@ class ExpenseRepository(context: Context) {
             migrateLegacyExpensesIfNeeded()
             removeDefaultCategoriesOnce()
             migrateBalanceAdjustmentsToMonths()
+            migrateGeneralExtraLimitToMonths()
         }
     }
 
@@ -108,6 +113,10 @@ class ExpenseRepository(context: Context) {
 
     val budgetChanges: Flow<Map<String, Long>> = preferencesFlow
         .map { preferences -> decodeBudgetChanges(preferences[budgetChangesKey]) }
+        .distinctUntilChanged()
+
+    val generalExtraLimitChanges: Flow<Map<String, Long>> = preferencesFlow
+        .map { preferences -> decodeGeneralExtraLimitChanges(preferences[generalExtraLimitChangesKey]) }
         .distinctUntilChanged()
 
     suspend fun upsertExpense(expense: ExpenseEntry) {
@@ -155,6 +164,15 @@ class ExpenseRepository(context: Context) {
             val budgetChanges = decodeBudgetChanges(preferences[budgetChangesKey]).toMutableMap()
             budgetChanges[key] = amountCents
             preferences[budgetChangesKey] = encodeBudgetChanges(budgetChanges)
+        }
+    }
+
+    suspend fun setGeneralExtraLimitCents(month: YearMonth, amountCents: Long?) {
+        dataStore.edit { preferences ->
+            val changes = decodeGeneralExtraLimitChanges(preferences[generalExtraLimitChangesKey]).toMutableMap()
+            if (amountCents == null) changes.remove(month.toString()) else changes[month.toString()] = amountCents
+            if (changes.isEmpty()) preferences.remove(generalExtraLimitChangesKey)
+            else preferences[generalExtraLimitChangesKey] = encodeGeneralExtraLimitChanges(changes)
         }
     }
 
@@ -211,6 +229,7 @@ class ExpenseRepository(context: Context) {
             .put("categoryColors", JSONObject(decodeCategoryColors(preferences[categoryColorsKey])))
             .put("monthlyBalanceAdjustments", JSONObject(decodeMonthlyBalanceAdjustments(preferences[monthlyBalanceAdjustmentsKey])))
             .put("budgetChanges", JSONObject(decodeBudgetChanges(preferences[budgetChangesKey])))
+            .put("generalExtraLimitChanges", JSONObject(decodeGeneralExtraLimitChanges(preferences[generalExtraLimitChangesKey])))
             .put("balanceAdjustmentCents", 0L)
             .toString()
     }
@@ -246,6 +265,14 @@ class ExpenseRepository(context: Context) {
                 preferences.remove(budgetChangesKey)
             } else {
                 preferences[budgetChangesKey] = encodeBudgetChanges(backup.budgetChanges)
+            }
+            val extraLimitChanges = backup.generalExtraLimitChanges.ifEmpty {
+                backup.legacyGeneralExtraLimitCents?.let { mapOf(YearMonth.now().toString() to it) }.orEmpty()
+            }
+            if (extraLimitChanges.isEmpty()) {
+                preferences.remove(generalExtraLimitChangesKey)
+            } else {
+                preferences[generalExtraLimitChangesKey] = encodeGeneralExtraLimitChanges(extraLimitChanges)
             }
             preferences.remove(balanceAdjustmentCentsKey)
             preferences[monthlyBalancesMigratedKey] = true
@@ -325,6 +352,20 @@ class ExpenseRepository(context: Context) {
             }
             mutablePreferences.remove(balanceAdjustmentCentsKey)
             mutablePreferences[monthlyBalancesMigratedKey] = true
+        }
+    }
+
+    private suspend fun migrateGeneralExtraLimitToMonths() {
+        val preferences = preferencesFlow.first()
+        val legacyLimit = preferences[generalExtraLimitCentsKey] ?: return
+        val changes = decodeGeneralExtraLimitChanges(preferences[generalExtraLimitChangesKey]).toMutableMap()
+        if (changes.isEmpty()) {
+            changes[YearMonth.now().toString()] = legacyLimit
+        }
+
+        dataStore.edit { mutablePreferences ->
+            mutablePreferences[generalExtraLimitChangesKey] = encodeGeneralExtraLimitChanges(changes)
+            mutablePreferences.remove(generalExtraLimitCentsKey)
         }
     }
 
@@ -411,6 +452,12 @@ class ExpenseRepository(context: Context) {
 
     private fun encodeMonthlyBalanceAdjustments(adjustments: Map<String, Long>): String = JSONObject(adjustments).toString()
 
+    private fun decodeGeneralExtraLimitChanges(rawJson: String?): Map<String, Long> =
+        decodeMonthlyBalanceAdjustments(rawJson)
+
+    private fun encodeGeneralExtraLimitChanges(changes: Map<String, Long>): String =
+        encodeMonthlyBalanceAdjustments(changes)
+
     private fun decodeBudgetChanges(rawJson: String?): Map<String, Long> {
         if (rawJson.isNullOrBlank()) return emptyMap()
 
@@ -489,6 +536,10 @@ class ExpenseRepository(context: Context) {
             categoryColors = decodeCategoryColors(root.optJSONObject("categoryColors")?.toString()),
             monthlyBalanceAdjustments = decodeMonthlyBalanceAdjustments(root.optJSONObject("monthlyBalanceAdjustments")?.toString()),
             budgetChanges = decodeBudgetChanges(root.optJSONObject("budgetChanges")?.toString()),
+            generalExtraLimitChanges = decodeGeneralExtraLimitChanges(root.optJSONObject("generalExtraLimitChanges")?.toString()),
+            legacyGeneralExtraLimitCents = root.takeIf {
+                !it.has("generalExtraLimitChanges") && it.has("generalExtraLimitCents") && !it.isNull("generalExtraLimitCents")
+            }?.getLong("generalExtraLimitCents"),
             legacyBalanceAdjustmentCents = root.takeIf { it.has("balanceAdjustmentCents") }?.getLong("balanceAdjustmentCents"),
         )
     }.getOrNull()

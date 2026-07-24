@@ -100,11 +100,22 @@ class RecentExpenseBalanceTest {
             expenses = listOf(expense, otherCategoryExpense),
             categories = listOf("Comida"),
             budgetChanges = mapOf(categoryBudgetKey(previousMonth, "Comida") to 5_000L),
+            generalExtraLimitChanges = mapOf(previousMonth.toString() to 1_000L),
             selectedMonth = currentMonth,
         )
 
         assertEquals(5_000L, budget.baseCents)
-        assertEquals(1_500L, budget.carryoverCents)
-        assertEquals(5_800L, budget.remainingCents)
+        assertEquals(1_000L, budget.carryoverCents)
+        assertEquals(6_000L, budget.remainingCents)
+    }
+
+    @Test
+    fun usesTheExtraLimitConfiguredForEachMonth() {
+        val currentMonth = YearMonth.now()
+        val previousMonth = currentMonth.minusMonths(1)
+        val limits = mapOf(previousMonth.toString() to 1_000L, currentMonth.toString() to 2_000L)
+
+        assertEquals(1_000L, effectiveGeneralExtraLimit(limits, previousMonth))
+        assertEquals(2_000L, effectiveGeneralExtraLimit(limits, currentMonth))
     }
 }

@@ -40,6 +40,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -147,7 +149,6 @@ fun SumptusApp(viewModel: MainViewModel = viewModel()) {
                         selected = currentSection == section,
                         onClick = { currentSection = section },
                         icon = { Icon(section.icon, contentDescription = section.label) },
-                        label = { Text(section.label) },
                     )
                 }
             }
@@ -232,6 +233,7 @@ fun SumptusApp(viewModel: MainViewModel = viewModel()) {
                     onPreviousMonth = viewModel::showPreviousMonth,
                     onNextMonth = viewModel::showNextMonth,
                     onSetCategoryBudget = viewModel::setCategoryBudget,
+                    onSetGeneralExtraLimit = viewModel::setGeneralExtraLimit,
                 )
 
                 SumptusSection.CATEGORIAS -> SettingsScreen(
@@ -464,22 +466,12 @@ private fun AddEntryScreen(
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold,
                                 )
-                                FlowRow(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    availableCategories.forEach { category ->
-                                        FilterChip(
-                                            selected = selectedCategory == category,
-                                            onClick = { selectedCategory = category },
-                                            label = { Text(category) },
-                                            colors = FilterChipDefaults.filterChipColors(
-                                                selectedContainerColor = categoryColor(category, uiState.categoryColors).copy(alpha = 0.18f),
-                                                selectedLabelColor = MaterialTheme.colorScheme.onSurface,
-                                            ),
-                                        )
-                                    }
-                                }
+                                CategoryDropdown(
+                                    categories = availableCategories,
+                                    selectedCategory = selectedCategory,
+                                    categoryColors = uiState.categoryColors,
+                                    onSelectCategory = { selectedCategory = it },
+                                )
                             }
                         }
                     }
@@ -656,9 +648,11 @@ private fun BudgetScreen(
     onPreviousMonth: () -> Unit,
     onNextMonth: () -> Unit,
     onSetCategoryBudget: (String, String) -> Boolean,
+    onSetGeneralExtraLimit: (String) -> Boolean,
 ) {
     var selectedCategory by rememberSaveable { mutableStateOf("") }
     var amountInput by rememberSaveable { mutableStateOf("") }
+    var editingBudget by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(uiState.categories) {
         if (selectedCategory !in uiState.categories) {
@@ -670,6 +664,43 @@ private fun BudgetScreen(
             .firstOrNull { it.category == selectedCategory }
             ?.let { formatAmountInput(it.baseCents) }
             .orEmpty()
+    }
+
+    if (editingBudget) {
+        AlertDialog(
+            onDismissRequest = { editingBudget = false },
+            title = { Text("Límite mensual") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    CategoryDropdown(
+                        categories = uiState.categories,
+                        selectedCategory = selectedCategory,
+                        categoryColors = uiState.categoryColors,
+                        onSelectCategory = { selectedCategory = it },
+                    )
+                    OutlinedTextField(
+                        value = amountInput,
+                        onValueChange = { amountInput = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Importe") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (onSetCategoryBudget(selectedCategory, amountInput)) editingBudget = false
+                }) {
+                    Text("Guardar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingBudget = false }) {
+                    Text("Cancelar")
+                }
+            },
+        )
     }
 
     LazyColumn(
@@ -691,58 +722,41 @@ private fun BudgetScreen(
             item { EmptyCard(title = "Sin categorías") }
         } else {
             item {
-                Card(
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(20.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                    ) {
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            uiState.categories.forEach { category ->
-                                FilterChip(
-                                    selected = selectedCategory == category,
-                                    onClick = { selectedCategory = category },
-                                    label = { Text(category) },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = categoryColor(category, uiState.categoryColors).copy(alpha = 0.18f),
-                                        selectedLabelColor = MaterialTheme.colorScheme.onSurface,
-                                    ),
-                                )
-                            }
-                        }
-                        OutlinedTextField(
-                            value = amountInput,
-                            onValueChange = { amountInput = it },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Límite mensual") },
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        )
-                        Button(
-                            onClick = { onSetCategoryBudget(selectedCategory, amountInput) },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Guardar")
-                        }
-                    }
-                }
+                BudgetTotalsCard(
+                    overview = uiState.budgetOverview,
+                    extraLimitCents = uiState.generalExtraLimitCents,
+                    onSetExtraLimit = onSetGeneralExtraLimit,
+                )
             }
-
             if (uiState.budgetOverview.categories.isEmpty()) {
                 item { EmptyCard(title = "Sin presupuestos") }
             } else {
-                item { BudgetTotalsCard(uiState.budgetOverview) }
                 items(uiState.budgetOverview.categories, key = { it.category }) { budget ->
                     BudgetRow(
                         budget = budget,
                         color = categoryColor(budget.category, uiState.categoryColors),
-                        onClick = { selectedCategory = budget.category },
+                        onClick = {
+                            selectedCategory = budget.category
+                            amountInput = formatAmountInput(budget.baseCents)
+                            editingBudget = true
+                        },
                     )
+                }
+            }
+            val newCategory = uiState.categories.firstOrNull { category ->
+                uiState.budgetOverview.categories.none { it.category == category }
+            }
+            if (newCategory != null) {
+                item {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                        IconButton(onClick = {
+                            selectedCategory = newCategory
+                            amountInput = ""
+                            editingBudget = true
+                        }) {
+                            Icon(Icons.Rounded.AddCircle, contentDescription = "Añadir límite")
+                        }
+                    }
                 }
             }
         }
@@ -792,9 +806,47 @@ private fun BudgetRow(
 }
 
 @Composable
-private fun BudgetTotalsCard(overview: BudgetOverview) {
+private fun BudgetTotalsCard(
+    overview: BudgetOverview,
+    extraLimitCents: Long?,
+    onSetExtraLimit: (String) -> Boolean,
+) {
     val carryoverColor = if (overview.carryoverCents >= 0L) incomeColor else expenseColor
     val remainingColor = if (overview.remainingCents >= 0L) incomeColor else expenseColor
+    var editingExtraLimit by rememberSaveable { mutableStateOf(false) }
+    var extraLimitInput by rememberSaveable { mutableStateOf("") }
+
+    LaunchedEffect(extraLimitCents) {
+        extraLimitInput = extraLimitCents?.let(::formatAmountInput).orEmpty()
+    }
+
+    if (editingExtraLimit) {
+        AlertDialog(
+            onDismissRequest = { editingExtraLimit = false },
+            title = { Text("Límite extra general") },
+            text = {
+                OutlinedTextField(
+                    value = extraLimitInput,
+                    onValueChange = { extraLimitInput = it },
+                    label = { Text("Importe") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (onSetExtraLimit(extraLimitInput)) editingExtraLimit = false
+                }) {
+                    Text("Guardar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingExtraLimit = false }) {
+                    Text("Cancelar")
+                }
+            },
+        )
+    }
 
     Card(
         shape = RoundedCornerShape(24.dp),
@@ -806,7 +858,12 @@ private fun BudgetTotalsCard(overview: BudgetOverview) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Extra general", style = MaterialTheme.typography.labelLarge)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Extra general", style = MaterialTheme.typography.labelLarge)
+                    IconButton(onClick = { editingExtraLimit = true }) {
+                        Icon(Icons.Rounded.AddCircle, contentDescription = "Editar límite extra general")
+                    }
+                }
                 Text(
                     formatSignedCurrency(overview.carryoverCents),
                     style = MaterialTheme.typography.titleMedium,
@@ -833,6 +890,44 @@ private fun BudgetTotalsCard(overview: BudgetOverview) {
 }
 
 @Composable
+private fun CategoryDropdown(
+    categories: List<String>,
+    selectedCategory: String,
+    categoryColors: Map<String, Long>,
+    onSelectCategory: (String) -> Unit,
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+
+    Box {
+        OutlinedButton(
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                selectedCategory.ifBlank { "Categoría" },
+                modifier = Modifier.weight(1f),
+                color = categoryColor(selectedCategory, categoryColors),
+            )
+            Icon(Icons.Rounded.ExpandMore, contentDescription = "Mostrar categorías")
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            categories.forEach { category ->
+                DropdownMenuItem(
+                    text = { Text(category, color = categoryColor(category, categoryColors)) },
+                    onClick = {
+                        onSelectCategory(category)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SettingsScreen(
     uiState: SumptusUiState,
     onAddCategory: (String) -> Boolean,
@@ -843,7 +938,8 @@ private fun SettingsScreen(
     onImportBackup: (Uri) -> Unit,
 ) {
     var newCategoryInput by rememberSaveable { mutableStateOf("") }
-    var categoryColorEditor by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedCategory by rememberSaveable { mutableStateOf("") }
+    var pendingCategoryDeletion by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json"),
@@ -851,6 +947,12 @@ private fun SettingsScreen(
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument(),
     ) { uri -> pendingImportUri = uri }
+
+    LaunchedEffect(uiState.categories) {
+        if (selectedCategory !in uiState.categories) {
+            selectedCategory = uiState.categories.firstOrNull().orEmpty()
+        }
+    }
 
     pendingImportUri?.let { uri ->
         AlertDialog(
@@ -869,6 +971,27 @@ private fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { pendingImportUri = null }) {
+                    Text("Cancelar")
+                }
+            },
+        )
+    }
+
+    pendingCategoryDeletion?.let { category ->
+        AlertDialog(
+            onDismissRequest = { pendingCategoryDeletion = null },
+            title = { Text("Eliminar $category") },
+            text = { Text("La categoría dejará de estar disponible en los nuevos gastos y presupuestos.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteCategory(category)
+                    pendingCategoryDeletion = null
+                }) {
+                    Text("Eliminar")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingCategoryDeletion = null }) {
                     Text("Cancelar")
                 }
             },
@@ -911,55 +1034,34 @@ private fun SettingsScreen(
                     ) {
                         Text("Añadir categoría")
                     }
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        uiState.categories.forEach { category ->
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Surface(
-                                    modifier = Modifier.clickable {
-                                        categoryColorEditor = if (categoryColorEditor == category) null else category
-                                    },
-                                    shape = RoundedCornerShape(999.dp),
-                                    color = categoryColor(category, uiState.categoryColors).copy(alpha = 0.14f),
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Box(
-                                            modifier = Modifier
-                                                .padding(start = 10.dp)
-                                                .size(10.dp)
-                                                .clip(CircleShape)
-                                                .background(categoryColor(category, uiState.categoryColors)),
-                                        )
-                                        Text(
-                                            text = category,
-                                            modifier = Modifier.padding(start = 8.dp),
-                                            style = MaterialTheme.typography.bodyMedium,
-                                        )
-                                        IconButton(onClick = { onDeleteCategory(category) }) {
-                                            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Eliminar $category")
-                                        }
-                                    }
-                                }
-                                if (categoryColorEditor == category) {
-                                    FlowRow(
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                                    ) {
-                                        categoryColorPalette.forEach { colorArgb ->
-                                            val color = Color(colorArgb.toInt())
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(if (categoryColor(category, uiState.categoryColors) == color) 28.dp else 22.dp)
-                                                    .clip(CircleShape)
-                                                    .background(color)
-                                                    .clickable { onSetCategoryColor(category, colorArgb) },
-                                            )
-                                        }
-                                    }
-                                }
+                    if (uiState.categories.isNotEmpty()) {
+                        CategoryDropdown(
+                            categories = uiState.categories,
+                            selectedCategory = selectedCategory,
+                            categoryColors = uiState.categoryColors,
+                            onSelectCategory = { selectedCategory = it },
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            categoryColorPalette.forEach { colorArgb ->
+                                val color = Color(colorArgb.toInt())
+                                Box(
+                                    modifier = Modifier
+                                        .size(if (categoryColor(selectedCategory, uiState.categoryColors) == color) 28.dp else 22.dp)
+                                        .clip(CircleShape)
+                                        .background(color)
+                                        .clickable { onSetCategoryColor(selectedCategory, colorArgb) },
+                                )
                             }
+                        }
+                        OutlinedButton(
+                            onClick = { pendingCategoryDeletion = selectedCategory },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Rounded.DeleteOutline, contentDescription = null)
+                            Text("Eliminar categoría")
                         }
                     }
                 }
