@@ -31,6 +31,7 @@ private val darkThemeKey = booleanPreferencesKey("dark_theme")
 private val extraEntriesKey = stringPreferencesKey("extra_entries_json")
 private val balanceAdjustmentCentsKey = longPreferencesKey("balance_adjustment_cents")
 private val monthlyBalanceAdjustmentsKey = stringPreferencesKey("monthly_balance_adjustments_json")
+private val budgetChangesKey = stringPreferencesKey("budget_changes_json")
 private val monthlyBalancesMigratedKey = booleanPreferencesKey("monthly_balances_migrated")
 private val defaultCategoriesRemovedKey = booleanPreferencesKey("default_categories_removed")
 private val retiredDefaultCategories = setOf(
@@ -50,11 +51,15 @@ private data class BackupData(
     val categories: List<String>,
     val categoryColors: Map<String, Long>,
     val monthlyBalanceAdjustments: Map<String, Long>,
+    val budgetChanges: Map<String, Long>,
     val legacyBalanceAdjustmentCents: Long?,
 )
 
 internal fun categoryColorKey(categoryName: String): String =
     normalizeCategoryName(categoryName).lowercase(Locale.ROOT)
+
+internal fun categoryBudgetKey(month: YearMonth, categoryName: String): String =
+    "$month|${categoryColorKey(categoryName)}"
 
 class ExpenseRepository(context: Context) {
     private val expenseDao = SumptusDatabase.getInstance(context).expenseDao()
@@ -101,6 +106,10 @@ class ExpenseRepository(context: Context) {
         .map { preferences -> decodeMonthlyBalanceAdjustments(preferences[monthlyBalanceAdjustmentsKey]) }
         .distinctUntilChanged()
 
+    val budgetChanges: Flow<Map<String, Long>> = preferencesFlow
+        .map { preferences -> decodeBudgetChanges(preferences[budgetChangesKey]) }
+        .distinctUntilChanged()
+
     suspend fun upsertExpense(expense: ExpenseEntry) {
         expenseDao.upsertExpense(expense)
     }
@@ -138,6 +147,17 @@ class ExpenseRepository(context: Context) {
         }
     }
 
+    suspend fun setCategoryBudget(month: YearMonth, categoryName: String, amountCents: Long) {
+        val key = categoryBudgetKey(month, categoryName)
+        if (key.endsWith("|")) return
+
+        dataStore.edit { preferences ->
+            val budgetChanges = decodeBudgetChanges(preferences[budgetChangesKey]).toMutableMap()
+            budgetChanges[key] = amountCents
+            preferences[budgetChangesKey] = encodeBudgetChanges(budgetChanges)
+        }
+    }
+
     suspend fun deleteCategory(categoryName: String) {
         dataStore.edit { preferences ->
             val categories = decodeCategories(preferences[categoriesKey])
@@ -153,6 +173,13 @@ class ExpenseRepository(context: Context) {
                 preferences.remove(categoryColorsKey)
             } else {
                 preferences[categoryColorsKey] = encodeCategoryColors(categoryColors)
+            }
+            val budgetChanges = decodeBudgetChanges(preferences[budgetChangesKey])
+                .filterNot { (key, _) -> key.endsWith("|${categoryColorKey(categoryName)}") }
+            if (budgetChanges.isEmpty()) {
+                preferences.remove(budgetChangesKey)
+            } else {
+                preferences[budgetChangesKey] = encodeBudgetChanges(budgetChanges)
             }
         }
     }
@@ -183,6 +210,7 @@ class ExpenseRepository(context: Context) {
             .put("categories", JSONArray(decodeCategories(preferences[categoriesKey])))
             .put("categoryColors", JSONObject(decodeCategoryColors(preferences[categoryColorsKey])))
             .put("monthlyBalanceAdjustments", JSONObject(decodeMonthlyBalanceAdjustments(preferences[monthlyBalanceAdjustmentsKey])))
+            .put("budgetChanges", JSONObject(decodeBudgetChanges(preferences[budgetChangesKey])))
             .put("balanceAdjustmentCents", 0L)
             .toString()
     }
@@ -213,6 +241,11 @@ class ExpenseRepository(context: Context) {
                 preferences.remove(monthlyBalanceAdjustmentsKey)
             } else {
                 preferences[monthlyBalanceAdjustmentsKey] = encodeMonthlyBalanceAdjustments(adjustments)
+            }
+            if (backup.budgetChanges.isEmpty()) {
+                preferences.remove(budgetChangesKey)
+            } else {
+                preferences[budgetChangesKey] = encodeBudgetChanges(backup.budgetChanges)
             }
             preferences.remove(balanceAdjustmentCentsKey)
             preferences[monthlyBalancesMigratedKey] = true
@@ -378,6 +411,24 @@ class ExpenseRepository(context: Context) {
 
     private fun encodeMonthlyBalanceAdjustments(adjustments: Map<String, Long>): String = JSONObject(adjustments).toString()
 
+    private fun decodeBudgetChanges(rawJson: String?): Map<String, Long> {
+        if (rawJson.isNullOrBlank()) return emptyMap()
+
+        return runCatching {
+            val values = JSONObject(rawJson)
+            buildMap {
+                val keys = values.keys()
+                while (keys.hasNext()) {
+                    val rawKey = keys.next()
+                    val (month, category) = rawKey.split("|", limit = 2)
+                    put(categoryBudgetKey(YearMonth.parse(month), category), values.getLong(rawKey))
+                }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun encodeBudgetChanges(changes: Map<String, Long>): String = JSONObject(changes).toString()
+
     private fun legacyMonthlyBalanceAdjustments(
         legacyBalanceAdjustmentCents: Long,
         expenses: List<ExpenseEntry>,
@@ -437,6 +488,7 @@ class ExpenseRepository(context: Context) {
             categories = decodeCategories(root.getJSONArray("categories").toString()),
             categoryColors = decodeCategoryColors(root.optJSONObject("categoryColors")?.toString()),
             monthlyBalanceAdjustments = decodeMonthlyBalanceAdjustments(root.optJSONObject("monthlyBalanceAdjustments")?.toString()),
+            budgetChanges = decodeBudgetChanges(root.optJSONObject("budgetChanges")?.toString()),
             legacyBalanceAdjustmentCents = root.takeIf { it.has("balanceAdjustmentCents") }?.getLong("balanceAdjustmentCents"),
         )
     }.getOrNull()

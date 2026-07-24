@@ -34,6 +34,7 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Home
+import androidx.compose.material.icons.rounded.PieChart
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -74,6 +75,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cris.sumptus.CategorySpendSummary
+import com.cris.sumptus.CategoryBudgetSummary
+import com.cris.sumptus.BudgetOverview
 import com.cris.sumptus.MainViewModel
 import com.cris.sumptus.MonthExpenseComparison
 import com.cris.sumptus.RecentExpense
@@ -99,6 +102,7 @@ private enum class SumptusSection(
     RESUMEN("Resumen", Icons.Rounded.Home),
     ANADIR("Añadir", Icons.Rounded.AddCircle),
     HISTORIAL("Historial", Icons.AutoMirrored.Rounded.ReceiptLong),
+    PRESUPUESTO("Presupuesto", Icons.Rounded.PieChart),
     CATEGORIAS("Categorías", Icons.Rounded.Settings),
 }
 
@@ -220,6 +224,14 @@ fun SumptusApp(viewModel: MainViewModel = viewModel()) {
                             is TimelineEntry.ExtraItem -> viewModel.deleteIncome(entry.extra)
                         }
                     },
+                )
+
+                SumptusSection.PRESUPUESTO -> BudgetScreen(
+                    uiState = uiState,
+                    onSelectMonth = viewModel::selectMonth,
+                    onPreviousMonth = viewModel::showPreviousMonth,
+                    onNextMonth = viewModel::showNextMonth,
+                    onSetCategoryBudget = viewModel::setCategoryBudget,
                 )
 
                 SumptusSection.CATEGORIAS -> SettingsScreen(
@@ -632,6 +644,189 @@ private fun HistoryScreen(
                         HistoryRow(entry, uiState.categoryColors, onEdit = { onEditEntry(entry) }, onDelete = { onDeleteEntry(entry) })
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BudgetScreen(
+    uiState: SumptusUiState,
+    onSelectMonth: (YearMonth) -> Unit,
+    onPreviousMonth: () -> Unit,
+    onNextMonth: () -> Unit,
+    onSetCategoryBudget: (String, String) -> Boolean,
+) {
+    var selectedCategory by rememberSaveable { mutableStateOf("") }
+    var amountInput by rememberSaveable { mutableStateOf("") }
+
+    LaunchedEffect(uiState.categories) {
+        if (selectedCategory !in uiState.categories) {
+            selectedCategory = uiState.categories.firstOrNull().orEmpty()
+        }
+    }
+    LaunchedEffect(selectedCategory, uiState.selectedMonth, uiState.budgetOverview.categories) {
+        amountInput = uiState.budgetOverview.categories
+            .firstOrNull { it.category == selectedCategory }
+            ?.let { formatAmountInput(it.baseCents) }
+            .orEmpty()
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item {
+            MonthSelectorCard(
+                selectedMonth = uiState.selectedMonth,
+                monthLabel = uiState.monthLabel,
+                onSelectMonth = onSelectMonth,
+                onPreviousMonth = onPreviousMonth,
+                onNextMonth = onNextMonth,
+            )
+        }
+
+        if (uiState.categories.isEmpty()) {
+            item { EmptyCard(title = "Sin categorías") }
+        } else {
+            item {
+                Card(
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            uiState.categories.forEach { category ->
+                                FilterChip(
+                                    selected = selectedCategory == category,
+                                    onClick = { selectedCategory = category },
+                                    label = { Text(category) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = categoryColor(category, uiState.categoryColors).copy(alpha = 0.18f),
+                                        selectedLabelColor = MaterialTheme.colorScheme.onSurface,
+                                    ),
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = amountInput,
+                            onValueChange = { amountInput = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = { Text("Límite mensual") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        )
+                        Button(
+                            onClick = { onSetCategoryBudget(selectedCategory, amountInput) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Guardar")
+                        }
+                    }
+                }
+            }
+
+            if (uiState.budgetOverview.categories.isEmpty()) {
+                item { EmptyCard(title = "Sin presupuestos") }
+            } else {
+                item { BudgetTotalsCard(uiState.budgetOverview) }
+                items(uiState.budgetOverview.categories, key = { it.category }) { budget ->
+                    BudgetRow(
+                        budget = budget,
+                        color = categoryColor(budget.category, uiState.categoryColors),
+                        onClick = { selectedCategory = budget.category },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BudgetRow(
+    budget: CategoryBudgetSummary,
+    color: Color,
+    onClick: () -> Unit,
+) {
+    val remainingColor = if (budget.remainingCents >= 0L) incomeColor else expenseColor
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(budget.category, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = color)
+                Text(
+                    "Base ${formatCurrency(budget.baseCents)} | Gastado ${formatCurrency(budget.spentCents)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    formatSignedCurrency(budget.remainingCents),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = remainingColor,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BudgetTotalsCard(overview: BudgetOverview) {
+    val carryoverColor = if (overview.carryoverCents >= 0L) incomeColor else expenseColor
+    val remainingColor = if (overview.remainingCents >= 0L) incomeColor else expenseColor
+
+    Card(
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(
+            modifier = Modifier.padding(20.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Extra general", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    formatSignedCurrency(overview.carryoverCents),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = carryoverColor,
+                )
+            }
+            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Disponible", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    formatSignedCurrency(overview.remainingCents),
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = remainingColor,
+                )
+                Text(
+                    "Base ${formatCurrency(overview.baseCents)} | Gastado ${formatCurrency(overview.spentCents)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                )
             }
         }
     }

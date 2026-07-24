@@ -2,6 +2,7 @@ package com.cris.sumptus
 
 import com.cris.sumptus.data.ExpenseEntry
 import com.cris.sumptus.data.ExtraEntry
+import com.cris.sumptus.data.categoryBudgetKey
 import com.cris.sumptus.data.categoryColorKey
 import java.time.LocalDate
 import java.time.YearMonth
@@ -74,5 +75,36 @@ class RecentExpenseBalanceTest {
 
         assertEquals(700L, balances["current"])
         assertEquals(1_900L, balances["previous"])
+    }
+
+    @Test
+    fun carriesUnspentBudgetIntoTheNextMonth() {
+        val currentMonth = YearMonth.now()
+        val previousMonth = currentMonth.minusMonths(1)
+        val expense = ExpenseEntry(
+            id = "food",
+            title = "",
+            amountCents = 3_500L,
+            category = "Comida",
+            notes = "",
+            occurredOn = previousMonth.atDay(1),
+        )
+        val otherCategoryExpense = expense.copy(
+            id = "transport",
+            amountCents = 700L,
+            category = "Transporte",
+            occurredOn = currentMonth.atDay(1),
+        )
+
+        val budget = buildBudgetOverview(
+            expenses = listOf(expense, otherCategoryExpense),
+            categories = listOf("Comida"),
+            budgetChanges = mapOf(categoryBudgetKey(previousMonth, "Comida") to 5_000L),
+            selectedMonth = currentMonth,
+        )
+
+        assertEquals(5_000L, budget.baseCents)
+        assertEquals(1_500L, budget.carryoverCents)
+        assertEquals(5_800L, budget.remainingCents)
     }
 }

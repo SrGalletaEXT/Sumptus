@@ -8,6 +8,7 @@ import com.cris.sumptus.data.ExpenseEntry
 import com.cris.sumptus.data.ExpenseRepository
 import com.cris.sumptus.data.ExtraEntry
 import com.cris.sumptus.data.IncomeType
+import com.cris.sumptus.data.categoryColorKey
 import com.cris.sumptus.data.normalizeCategoryName
 import java.time.LocalDate
 import java.time.YearMonth
@@ -37,6 +38,25 @@ data class RecentExpense(
     val expense: ExpenseEntry,
     val balanceAfterCents: Long,
 )
+
+data class CategoryBudgetSummary(
+    val category: String,
+    val baseCents: Long,
+    val spentCents: Long,
+    val remainingCents: Long,
+)
+
+data class BudgetOverview(
+    val carryoverCents: Long,
+    val baseCents: Long,
+    val spentCents: Long,
+    val remainingCents: Long,
+    val categories: List<CategoryBudgetSummary>,
+) {
+    companion object {
+        fun empty() = BudgetOverview(0L, 0L, 0L, 0L, emptyList())
+    }
+}
 
 sealed interface TimelineEntry {
     val id: String
@@ -91,6 +111,56 @@ internal fun buildRecentExpenses(
         .map { expense -> RecentExpense(expense, balances.getValue(expense.id)) }
 }
 
+internal fun buildBudgetOverview(
+    expenses: List<ExpenseEntry>,
+    categories: List<String>,
+    budgetChanges: Map<String, Long>,
+    selectedMonth: YearMonth,
+): BudgetOverview {
+    val categoryChanges = categories.associateWith { category ->
+        val categoryKey = categoryColorKey(category)
+        budgetChanges.mapNotNull { (key, amountCents) ->
+            val parts = key.split("|", limit = 2)
+            if (parts.size == 2 && parts[1] == categoryKey) YearMonth.parse(parts[0]) to amountCents else null
+        }.sortedBy { it.first }
+    }
+    val firstMonth = categoryChanges.values.flatten().minOfOrNull { it.first } ?: return BudgetOverview.empty()
+    if (firstMonth > selectedMonth) return BudgetOverview.empty()
+
+    var carryoverCents = 0L
+    var month = firstMonth
+    while (month <= selectedMonth) {
+        val bases = categoryChanges.mapNotNull { (category, changes) ->
+            changes.lastOrNull { it.first <= month }?.second?.let { category to it }
+        }.toMap()
+        val baseCents = bases.values.sum()
+        val spentCents = expenses.filter { YearMonth.from(it.occurredOn) == month }.sumOf { it.amountCents }
+        val remainingCents = baseCents + carryoverCents - spentCents
+        if (month == selectedMonth) {
+            return BudgetOverview(
+                carryoverCents = carryoverCents,
+                baseCents = baseCents,
+                spentCents = spentCents,
+                remainingCents = remainingCents,
+                categories = bases.map { (category, categoryBaseCents) ->
+                    val categorySpentCents = expenses
+                        .filter { YearMonth.from(it.occurredOn) == month && categoryColorKey(it.category) == categoryColorKey(category) }
+                        .sumOf { it.amountCents }
+                    CategoryBudgetSummary(
+                        category = category,
+                        baseCents = categoryBaseCents,
+                        spentCents = categorySpentCents,
+                        remainingCents = categoryBaseCents - categorySpentCents,
+                    )
+                }.sortedBy { it.category },
+            )
+        }
+        carryoverCents = remainingCents
+        month = month.plusMonths(1)
+    }
+    return BudgetOverview.empty()
+}
+
 data class SumptusUiState(
     val selectedMonth: YearMonth,
     val monthLabel: String,
@@ -101,6 +171,7 @@ data class SumptusUiState(
     val balanceAdjustmentCents: Long,
     val categories: List<String>,
     val categoryColors: Map<String, Long>,
+    val budgetOverview: BudgetOverview,
     val lastThreeMonthExpenses: List<MonthExpenseComparison>,
     val recentExpenses: List<RecentExpense>,
     val historyEntries: List<TimelineEntry>,
@@ -118,6 +189,7 @@ data class SumptusUiState(
             balanceAdjustmentCents = 0L,
             categories = emptyList(),
             categoryColors = emptyMap(),
+            budgetOverview = BudgetOverview.empty(),
             lastThreeMonthExpenses = emptyList(),
             recentExpenses = emptyList(),
             historyEntries = emptyList(),
@@ -137,6 +209,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val categories: List<String>,
         val categoryColors: Map<String, Long>,
         val extraEntries: List<ExtraEntry>,
+        val budgetChanges: Map<String, Long>,
         val monthlyBalanceAdjustments: Map<String, Long>,
         val selectedMonth: YearMonth,
     )
@@ -146,6 +219,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val categories: List<String>,
         val categoryColors: Map<String, Long>,
         val extraEntries: List<ExtraEntry>,
+        val budgetChanges: Map<String, Long>,
     )
 
     private val entryInputs = combine(
@@ -153,8 +227,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.categories,
         repository.categoryColors,
         repository.extraEntries,
-    ) { expenses, categories, categoryColors, extraEntries ->
-        EntryInputs(expenses, categories, categoryColors, extraEntries)
+        repository.budgetChanges,
+    ) { expenses, categories, categoryColors, extraEntries, budgetChanges ->
+        EntryInputs(expenses, categories, categoryColors, extraEntries, budgetChanges)
     }
 
     private val summaryInputs = combine(
@@ -167,6 +242,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             categories = entries.categories,
             categoryColors = entries.categoryColors,
             extraEntries = entries.extraEntries,
+            budgetChanges = entries.budgetChanges,
             monthlyBalanceAdjustments = monthlyBalanceAdjustments,
             selectedMonth = month,
         )
@@ -178,6 +254,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             storedCategories = inputs.categories,
             categoryColors = inputs.categoryColors,
             extraEntries = inputs.extraEntries,
+            budgetChanges = inputs.budgetChanges,
             monthlyBalanceAdjustments = inputs.monthlyBalanceAdjustments,
             selectedMonth = inputs.selectedMonth,
             isDarkTheme = isDarkTheme,
@@ -344,6 +421,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setCategoryBudget(category: String, amountInput: String): Boolean {
+        val amountCents = parseAmountToCents(amountInput)
+        if (amountCents == null || amountCents <= 0L) {
+            feedback.value = "Presupuesto no válido."
+            return false
+        }
+
+        val state = uiState.value
+        viewModelScope.launch {
+            repository.setCategoryBudget(state.selectedMonth, category, amountCents)
+            feedback.value = "Presupuesto guardado."
+        }
+        return true
+    }
+
     fun exportBackup(uri: Uri) {
         viewModelScope.launch {
             runCatching {
@@ -398,6 +490,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         storedCategories: List<String>,
         categoryColors: Map<String, Long>,
         extraEntries: List<ExtraEntry>,
+        budgetChanges: Map<String, Long>,
         monthlyBalanceAdjustments: Map<String, Long>,
         selectedMonth: YearMonth,
         isDarkTheme: Boolean,
@@ -421,6 +514,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             balanceAdjustmentCents = balanceAdjustmentCents,
             categories = storedCategories,
             categoryColors = categoryColors,
+            budgetOverview = buildBudgetOverview(expenses, storedCategories, budgetChanges, selectedMonth),
             lastThreeMonthExpenses = buildLastThreeMonthExpenses(expenses, selectedMonth),
             recentExpenses = buildRecentExpenses(expenses, extraEntries, monthlyBalanceAdjustments),
             historyEntries = buildHistoryEntries(monthExpenses, monthExtras),
