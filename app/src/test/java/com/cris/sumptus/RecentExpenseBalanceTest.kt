@@ -41,7 +41,7 @@ class RecentExpenseBalanceTest {
             listOf(income),
             mapOf(YearMonth.now().toString() to 1_500L),
         )
-            .associate { it.expense.id to it.balanceAfterCents }
+            .associate { it.id to it.balanceAfterCents }
 
         assertEquals(1_000L, balances["first"])
         assertEquals(800L, balances["second"])
@@ -71,7 +71,7 @@ class RecentExpenseBalanceTest {
             listOf(currentExpense, previousExpense),
             emptyList(),
             mapOf(currentMonth.toString() to 1_000L, previousMonth.toString() to 2_000L),
-        ).associate { it.expense.id to it.balanceAfterCents }
+        ).associate { it.id to it.balanceAfterCents }
 
         // previous month: 0 (nothing before it) + 2_000 adjustment - 100 expense = 1_900
         assertEquals(1_900L, balances["previous"])
@@ -99,7 +99,7 @@ class RecentExpenseBalanceTest {
             listOf(oldExpense, currentExpense),
             emptyList(),
             mapOf(twoMonthsAgo.toString() to 1_000L),
-        ).associate { it.expense.id to it.balanceAfterCents }
+        ).associate { it.id to it.balanceAfterCents }
 
         assertEquals(600L, balances["old"])
         assertEquals(500L, balances["current"])

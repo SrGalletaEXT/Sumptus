@@ -45,6 +45,7 @@ private val investmentAllocationsKey = stringPreferencesKey("investment_allocati
 private val balanceAdjustmentsCarryoverMigratedKey = booleanPreferencesKey("balance_adjustments_carryover_migrated")
 private val generalPotGainCentsKey = longPreferencesKey("general_pot_gain_cents")
 private val investmentValuationsKey = stringPreferencesKey("investment_valuations_json")
+private val investmentInterestsKey = stringPreferencesKey("investment_interests_json")
 private val retiredDefaultCategories = setOf(
     "Hogar",
     "Comida",
@@ -54,7 +55,7 @@ private val retiredDefaultCategories = setOf(
     "Suscripciones",
     "Otros",
 )
-private const val backupVersion = 4
+private const val backupVersion = 5
 
 /** Backups up to this version store monthly balance adjustments where every month started at 0. */
 private const val lastIndependentMonthBackupVersion = 2
@@ -75,6 +76,7 @@ private data class BackupData(
     val investments: List<Investment>,
     val investmentAllocations: List<InvestmentAllocation>,
     val investmentValuations: List<InvestmentValuation>,
+    val investmentInterests: List<InvestmentInterest>,
 )
 
 /**
@@ -225,6 +227,24 @@ class ExpenseRepository(context: Context) {
         }
     }
 
+    val investmentInterests: Flow<List<InvestmentInterest>> = preferencesFlow
+        .map { preferences -> decodeInvestmentInterests(preferences[investmentInterestsKey]) }
+        .distinctUntilChanged()
+
+    suspend fun addInvestmentInterest(interest: InvestmentInterest) {
+        dataStore.edit { preferences ->
+            val interests = decodeInvestmentInterests(preferences[investmentInterestsKey])
+            preferences[investmentInterestsKey] = encodeInvestmentInterests(interests + interest)
+        }
+    }
+
+    suspend fun deleteInvestmentInterest(interestId: String) {
+        dataStore.edit { preferences ->
+            val interests = decodeInvestmentInterests(preferences[investmentInterestsKey]).filterNot { it.id == interestId }
+            preferences[investmentInterestsKey] = encodeInvestmentInterests(interests)
+        }
+    }
+
     /** Saves a valuation, replacing any other valuation of the same target in the same month. */
     suspend fun upsertInvestmentValuation(valuation: InvestmentValuation) {
         val month = YearMonth.from(valuation.occurredOn)
@@ -256,6 +276,9 @@ class ExpenseRepository(context: Context) {
             val valuations = decodeInvestmentValuations(preferences[investmentValuationsKey])
                 .filterNot { it.targetId == investmentId }
             preferences[investmentValuationsKey] = encodeInvestmentValuations(valuations)
+            val interests = decodeInvestmentInterests(preferences[investmentInterestsKey])
+                .filterNot { it.targetId == investmentId }
+            preferences[investmentInterestsKey] = encodeInvestmentInterests(interests)
         }
     }
 
@@ -392,6 +415,7 @@ class ExpenseRepository(context: Context) {
             .put("investments", JSONArray(decodeInvestments(preferences[investmentsKey]).map { it.toJson() }))
             .put("investmentAllocations", JSONArray(decodeInvestmentAllocations(preferences[investmentAllocationsKey]).map { it.toJson() }))
             .put("investmentValuations", JSONArray(decodeInvestmentValuations(preferences[investmentValuationsKey]).map { it.toJson() }))
+            .put("investmentInterests", JSONArray(decodeInvestmentInterests(preferences[investmentInterestsKey]).map { it.toJson() }))
             .toString()
     }
 
@@ -444,6 +468,7 @@ class ExpenseRepository(context: Context) {
             preferences[investmentsKey] = encodeInvestments(backup.investments)
             preferences[investmentAllocationsKey] = encodeInvestmentAllocations(backup.investmentAllocations)
             preferences[investmentValuationsKey] = encodeInvestmentValuations(backup.investmentValuations)
+            preferences[investmentInterestsKey] = encodeInvestmentInterests(backup.investmentInterests)
             preferences.remove(generalPotGainCentsKey)
             preferences.remove(balanceAdjustmentCentsKey)
             preferences[monthlyBalancesMigratedKey] = true
@@ -759,6 +784,12 @@ class ExpenseRepository(context: Context) {
     private fun encodeInvestmentValuations(valuations: List<InvestmentValuation>): String =
         JSONArray(valuations.map { it.toJson() }).toString()
 
+    private fun decodeInvestmentInterests(rawJson: String?): List<InvestmentInterest> =
+        decodeJsonList(rawJson, InvestmentInterest::fromJson)
+
+    private fun encodeInvestmentInterests(interests: List<InvestmentInterest>): String =
+        JSONArray(interests.map { it.toJson() }).toString()
+
     private fun decodeBackup(rawBackup: String): BackupData? = runCatching {
         val root = JSONObject(rawBackup)
         val version = root.getInt("version")
@@ -792,6 +823,7 @@ class ExpenseRepository(context: Context) {
             investmentAllocations = decodeInvestmentAllocations(root.optJSONArray("investmentAllocations")?.toString()),
             investmentValuations = decodeInvestmentValuations(root.optJSONArray("investmentValuations")?.toString()) +
                 legacyGainsToValuations(backupInvestments, root.optLong("generalPotGainCents", 0L), LocalDate.now()),
+            investmentInterests = decodeInvestmentInterests(root.optJSONArray("investmentInterests")?.toString()),
         )
     }.getOrNull()
 }

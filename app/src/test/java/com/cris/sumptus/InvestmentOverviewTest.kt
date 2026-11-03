@@ -4,6 +4,7 @@ import com.cris.sumptus.data.ExpenseEntry
 import com.cris.sumptus.data.GENERAL_POT_ID
 import com.cris.sumptus.data.Investment
 import com.cris.sumptus.data.InvestmentAllocation
+import com.cris.sumptus.data.InvestmentInterest
 import com.cris.sumptus.data.InvestmentTransfer
 import com.cris.sumptus.data.InvestmentValuation
 import com.cris.sumptus.data.legacyGainsToValuations
@@ -99,5 +100,49 @@ class InvestmentOverviewTest {
         assertEquals(2, valuations.size)
         assertTrue(valuations.any { it.targetId == GENERAL_POT_ID && it.gainCents == 20L })
         assertTrue(valuations.any { it.targetId == "a" && it.gainCents == 70L })
+    }
+
+    @Test
+    fun interestAddsUpAndCarriesIntoLaterMonths() {
+        val transfers = listOf(InvestmentTransfer(amountCents = 10_000L, occurredOn = sep.atDay(1)))
+        val interests = listOf(
+            InvestmentInterest(targetId = GENERAL_POT_ID, amountCents = 150L, occurredOn = sep.atEndOfMonth()),
+            InvestmentInterest(targetId = GENERAL_POT_ID, amountCents = 160L, occurredOn = oct.atEndOfMonth()),
+        )
+        fun overviewIn(month: YearMonth) = buildInvestmentOverview(transfers, emptyList(), emptyList(), emptyList(), month, interests)
+
+        assertEquals(10_150L, overviewIn(sep).potValueCents)
+        assertEquals(10_310L, overviewIn(oct).potValueCents)
+        assertEquals(160L, overviewIn(oct).potMonthInterestCents)
+        assertEquals(310L, overviewIn(nov).potGainCents)
+        assertEquals(10_310L, overviewIn(nov).potValueCents)
+    }
+
+    @Test
+    fun interestAfterSettingTheTotalAddsOnTop() {
+        val transfers = listOf(InvestmentTransfer(amountCents = 10_000L, occurredOn = sep.atDay(1)))
+        val interests = listOf(InvestmentInterest(targetId = GENERAL_POT_ID, amountCents = 100L, occurredOn = sep.atDay(10)))
+        // Total set to 10_500 in September while 100 of interest was already recorded: the
+        // valuation only stores the remaining 400.
+        val valuations = listOf(InvestmentValuation(targetId = GENERAL_POT_ID, occurredOn = sep.atDay(20), gainCents = 400L))
+        val octInterest = interests + InvestmentInterest(targetId = GENERAL_POT_ID, amountCents = 50L, occurredOn = oct.atDay(5))
+
+        assertEquals(10_500L, buildInvestmentOverview(transfers, emptyList(), emptyList(), valuations, sep, interests).potValueCents)
+        assertEquals(10_550L, buildInvestmentOverview(transfers, emptyList(), emptyList(), valuations, oct, octInterest).potValueCents)
+    }
+
+    @Test
+    fun transfersShowUpInLatestActivityWithTheBalanceAfterThem() {
+        val expense = ExpenseEntry(
+            id = "e", title = "", amountCents = 100L, category = "", notes = "",
+            occurredOn = nov.atDay(2), createdAtEpochMillis = 1L,
+        )
+        val transfer = InvestmentTransfer(id = "t", amountCents = 400L, occurredOn = nov.atDay(3), createdAtEpochMillis = 2L)
+
+        val recent = buildRecentExpenses(listOf(expense), emptyList(), mapOf(nov.toString() to 1_000L), listOf(transfer))
+
+        assertEquals(listOf("t", "e"), recent.map { it.id })
+        assertEquals(500L, recent[0].balanceAfterCents)
+        assertEquals(900L, recent[1].balanceAfterCents)
     }
 }

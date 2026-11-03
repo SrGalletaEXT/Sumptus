@@ -90,6 +90,7 @@ import com.cris.sumptus.RecentExpense
 import com.cris.sumptus.SumptusUiState
 import com.cris.sumptus.TimelineEntry
 import com.cris.sumptus.data.ExpenseEntry
+import com.cris.sumptus.data.GENERAL_POT_ID
 import com.cris.sumptus.data.ExtraEntry
 import com.cris.sumptus.data.IncomeType
 import com.cris.sumptus.formatExpenseInputDate
@@ -132,6 +133,10 @@ private val str: Strings
     @Composable @ReadOnlyComposable get() = LocalStrings.current
 
 private val expenseColor = Color(0xFFB25D66)
+
+/** For money that just changes place (Saldo <-> investments): neither income nor expense. */
+@Composable
+private fun neutralColor(): Color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f)
 private val incomeColor = Color(0xFF4E8063)
 
 @Composable
@@ -258,6 +263,7 @@ fun SumptusApp(viewModel: MainViewModel = viewModel()) {
                     onAddInvestment = viewModel::addInvestment,
                     onSaveAllocation = viewModel::saveInvestmentAllocation,
                     onSetInvestmentValue = viewModel::setInvestmentValue,
+                    onAddInterest = viewModel::addInvestmentInterest,
                     onDeleteInvestment = viewModel::deleteInvestment,
                     onDeleteMovement = viewModel::deleteInvestmentMovement,
                 )
@@ -341,6 +347,8 @@ private fun SummaryScreen(
                 expenseCents = uiState.monthExpenseTotalCents,
                 incomeCents = uiState.monthIncomeTotalCents,
                 netCents = uiState.monthNetCents,
+                investmentTransferCents = uiState.monthInvestmentTransferCents,
+                investmentsValueCents = uiState.investmentOverview.totalValueCents,
                 onEditBalance = {
                     balanceInput = formatAmountInput(uiState.currentBalanceCents)
                     editingBalance = true
@@ -1181,6 +1189,8 @@ private fun SummaryTotalsCard(
     expenseCents: Long,
     incomeCents: Long,
     netCents: Long,
+    investmentTransferCents: Long,
+    investmentsValueCents: Long,
     onEditBalance: () -> Unit,
 ) {
     Card(
@@ -1213,6 +1223,24 @@ private fun SummaryTotalsCard(
                 color = if (netCents >= 0L) incomeColor else expenseColor,
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (investmentTransferCents != 0L || investmentsValueCents != 0L) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (investmentTransferCents != 0L) {
+                        SummaryMetric(
+                            label = if (investmentTransferCents > 0L) str.toInvestments else str.fromInvestments,
+                            value = formatCurrency(investmentTransferCents.absoluteValue),
+                            color = neutralColor(),
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    SummaryMetric(
+                        label = str.netWorth,
+                        value = formatCurrency(balanceCents + investmentsValueCents),
+                        color = neutralColor(),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
         }
     }
 }
@@ -1359,7 +1387,14 @@ private fun RecentExpenseRow(
     categoryColors: Map<String, Long>,
 ) {
     val expense = recentExpense.expense
-    val color = categoryColor(expense.category, categoryColors)
+    val transfer = recentExpense.transfer
+    val color = if (expense != null) categoryColor(expense.category, categoryColors) else neutralColor()
+    val title = when {
+        expense != null -> expense.notes.ifBlank { expense.category }
+        transfer!!.amountCents >= 0L -> "→ " + str.investments
+        else -> "← " + str.backToBalance
+    }
+    val subtitle = expense?.category ?: transfer?.notes?.ifBlank { str.generalAccount }.orEmpty()
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1373,15 +1408,15 @@ private fun RecentExpenseRow(
         )
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                expense.notes.ifBlank { expense.category },
+                title,
                 style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(expense.category, style = MaterialTheme.typography.bodySmall, color = color)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    expense.occurredOn.format(DateTimeFormatter.ofPattern("d MMM", str.locale)),
+                    recentExpense.occurredOn.format(DateTimeFormatter.ofPattern("d MMM", str.locale)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                 )
@@ -1392,10 +1427,10 @@ private fun RecentExpenseRow(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
-                formatCurrency(expense.amountCents),
+                formatCurrency(recentExpense.amountCents.absoluteValue),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                color = expenseColor,
+                color = if (expense != null) expenseColor else neutralColor(),
             )
             Text(
                 formatCurrency(recentExpense.balanceAfterCents),
@@ -1707,6 +1742,7 @@ private sealed interface InvestmentDialog {
     data class Actions(val investmentId: String) : InvestmentDialog
     data class Allocate(val investmentId: String, val intoInvestment: Boolean) : InvestmentDialog
     data class Value(val investmentId: String) : InvestmentDialog
+    data class Interest(val targetId: String) : InvestmentDialog
     data class ConfirmDelete(val investmentId: String) : InvestmentDialog
     data class ConfirmDeleteMovement(val movement: InvestmentMovement) : InvestmentDialog
 }
@@ -1722,6 +1758,7 @@ private fun InvestmentsScreen(
     onAddInvestment: (name: String, initialAmount: String) -> Boolean,
     onSaveAllocation: (investmentId: String, amount: String, intoInvestment: Boolean) -> Boolean,
     onSetInvestmentValue: (investmentId: String, amount: String) -> Boolean,
+    onAddInterest: (targetId: String, amount: String) -> Boolean,
     onDeleteInvestment: (String) -> Unit,
     onDeleteMovement: (InvestmentMovement) -> Unit,
 ) {
@@ -1770,6 +1807,7 @@ private fun InvestmentsScreen(
                             InvestmentAction(str.withdrawToPot) {
                                 dialog = InvestmentDialog.Allocate(current.investmentId, intoInvestment = false)
                             }
+                            InvestmentAction(str.addReturn) { dialog = InvestmentDialog.Interest(current.investmentId) }
                             InvestmentAction(str.updateValue) { dialog = InvestmentDialog.Value(current.investmentId) }
                             InvestmentAction(str.delete, color = expenseColor) {
                                 dialog = InvestmentDialog.ConfirmDelete(current.investmentId)
@@ -1802,6 +1840,16 @@ private fun InvestmentsScreen(
                 initialValue = formatAmountInput(summary?.valueCents ?: 0L),
                 onDismiss = close,
                 onSave = { if (onSetInvestmentValue(current.investmentId, it)) close() },
+            )
+        }
+        is InvestmentDialog.Interest -> {
+            val isPot = current.targetId == GENERAL_POT_ID
+            AmountDialog(
+                title = if (isPot) str.addInterestTitle else "${str.addReturn}: ${summaryOf(current.targetId)?.investment?.name.orEmpty()}",
+                supportingText = if (isPot) str.addInterestHint else str.addReturnHint,
+                initialValue = "",
+                onDismiss = close,
+                onSave = { if (onAddInterest(current.targetId, it)) close() },
             )
         }
         is InvestmentDialog.ConfirmDelete -> {
@@ -1890,32 +1938,43 @@ private fun InvestmentsScreen(
 
         item {
             Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { dialog = InvestmentDialog.PotValue },
+                modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(22.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(str.generalAccount, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Column(modifier = Modifier.padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 6.dp)) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(str.generalAccount, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                listOfNotNull(
+                                    "${str.interest} ${formatSignedCurrency(overview.potGainCents)}",
+                                    overview.potMonthInterestCents.takeIf { it != 0L }
+                                        ?.let { str.interestThisMonth(formatSignedCurrency(it)) },
+                                ).joinToString(" | "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                         Text(
-                            str.interestTapToUpdate(formatSignedCurrency(overview.potGainCents)),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            formatCurrency(overview.potValueCents),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
                         )
                     }
-                    Text(
-                        formatCurrency(overview.potValueCents),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(onClick = { dialog = InvestmentDialog.Interest(GENERAL_POT_ID) }) {
+                            Text(str.addInterest, color = incomeColor)
+                        }
+                        TextButton(onClick = { dialog = InvestmentDialog.PotValue }) {
+                            Text(str.adjustTotal)
+                        }
+                    }
                 }
             }
         }
@@ -2041,9 +2100,18 @@ private fun InvestmentMovementRow(movement: InvestmentMovement, onDelete: () -> 
             )
         }
         Text(
-            formatCurrency(if (movement is InvestmentMovement.Valuation) movement.amountCents else movement.amountCents.absoluteValue),
+            when (movement) {
+                is InvestmentMovement.Valuation -> formatCurrency(movement.amountCents)
+                is InvestmentMovement.Interest -> formatSignedCurrency(movement.amountCents)
+                else -> formatCurrency(movement.amountCents.absoluteValue)
+            },
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
+            color = when {
+                movement !is InvestmentMovement.Interest -> Color.Unspecified
+                movement.amountCents >= 0L -> incomeColor
+                else -> expenseColor
+            },
         )
         IconButton(onClick = onDelete) {
             Icon(Icons.Rounded.DeleteOutline, contentDescription = str.deleteMovement)
@@ -2058,6 +2126,9 @@ private fun movementTitle(movement: InvestmentMovement): String = when (movement
         val name = movement.investmentName.ifBlank { str.investmentFallback }
         if (movement.amountCents >= 0L) str.potTo(name) else str.toPot(name)
     }
+    is InvestmentMovement.Interest -> str.interestFor(
+        if (movement.isPot) str.generalAccount else movement.targetName ?: str.investmentFallback,
+    )
     is InvestmentMovement.Valuation -> str.valueUpdatedFor(
         if (movement.isPot) str.generalAccount else movement.targetName ?: str.investmentFallback,
     )

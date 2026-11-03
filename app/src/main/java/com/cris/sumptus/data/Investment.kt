@@ -109,9 +109,9 @@ data class InvestmentAllocation(
 const val GENERAL_POT_ID = "general"
 
 /**
- * The value of the general pot or of one investment as of a date, stored as the gain over the
- * money put in up to that date. From that date on, the value is `invested + gainCents` until a
- * later valuation replaces it, so updating September never touches October or November values
+ * The value of the general pot or of one investment as of a date, stored as the difference from
+ * the money put in plus the [InvestmentInterest]s up to that date. From that date on, the value
+ * is `invested + interest + gainCents` until a later valuation replaces it, so updating September never touches October or November values
  * that were set on their own. There is at most one valuation per target and month.
  */
 data class InvestmentValuation(
@@ -150,5 +150,37 @@ internal fun legacyGainsToValuations(
     if (potGainCents != 0L) add(InvestmentValuation(targetId = GENERAL_POT_ID, occurredOn = date, gainCents = potGainCents))
     investments.filter { it.gainCents != 0L }.forEach {
         add(InvestmentValuation(targetId = it.id, occurredOn = date, gainCents = it.gainCents))
+    }
+}
+
+/**
+ * Interest or return earned by the general pot or one investment on a date (e.g. the monthly
+ * interest of the remunerated account). It adds to the value from that date on. Negative
+ * amounts are losses.
+ */
+data class InvestmentInterest(
+    val id: String = UUID.randomUUID().toString(),
+    val targetId: String,
+    val amountCents: Long,
+    val occurredOn: LocalDate,
+    val createdAtEpochMillis: Long = System.currentTimeMillis(),
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("id", id)
+        .put("targetId", targetId)
+        .put("amountCents", amountCents)
+        .put("occurredOn", occurredOn.format(DateTimeFormatter.ISO_LOCAL_DATE))
+        .put("createdAtEpochMillis", createdAtEpochMillis)
+
+    companion object {
+        fun fromJson(json: JSONObject): InvestmentInterest? = runCatching {
+            InvestmentInterest(
+                id = json.optString("id").ifBlank { UUID.randomUUID().toString() },
+                targetId = json.getString("targetId"),
+                amountCents = json.getLong("amountCents"),
+                occurredOn = LocalDate.parse(json.getString("occurredOn")),
+                createdAtEpochMillis = json.optLong("createdAtEpochMillis", System.currentTimeMillis()),
+            )
+        }.getOrNull()
     }
 }
