@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import java.io.File
+import java.time.LocalDate
 import java.time.YearMonth
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
@@ -43,6 +44,7 @@ private val investmentsKey = stringPreferencesKey("investments_json")
 private val investmentAllocationsKey = stringPreferencesKey("investment_allocations_json")
 private val balanceAdjustmentsCarryoverMigratedKey = booleanPreferencesKey("balance_adjustments_carryover_migrated")
 private val generalPotGainCentsKey = longPreferencesKey("general_pot_gain_cents")
+private val investmentValuationsKey = stringPreferencesKey("investment_valuations_json")
 private val retiredDefaultCategories = setOf(
     "Hogar",
     "Comida",
@@ -52,7 +54,7 @@ private val retiredDefaultCategories = setOf(
     "Suscripciones",
     "Otros",
 )
-private const val backupVersion = 3
+private const val backupVersion = 4
 
 /** Backups up to this version store monthly balance adjustments where every month started at 0. */
 private const val lastIndependentMonthBackupVersion = 2
@@ -72,7 +74,7 @@ private data class BackupData(
     val investmentTransfers: List<InvestmentTransfer>,
     val investments: List<Investment>,
     val investmentAllocations: List<InvestmentAllocation>,
-    val generalPotGainCents: Long,
+    val investmentValuations: List<InvestmentValuation>,
 )
 
 /**
@@ -141,6 +143,7 @@ class ExpenseRepository(context: Context) {
             migrateBalanceAdjustmentsToMonths()
             migrateGeneralExtraLimitToMonths()
             migrateBalanceAdjustmentsToCarryover()
+            migrateUndatedInvestmentGains()
         }
     }
 
@@ -194,8 +197,8 @@ class ExpenseRepository(context: Context) {
         .map { preferences -> decodeInvestmentAllocations(preferences[investmentAllocationsKey]) }
         .distinctUntilChanged()
 
-    val generalPotGainCents: Flow<Long> = preferencesFlow
-        .map { preferences -> preferences[generalPotGainCentsKey] ?: 0L }
+    val investmentValuations: Flow<List<InvestmentValuation>> = preferencesFlow
+        .map { preferences -> decodeInvestmentValuations(preferences[investmentValuationsKey]) }
         .distinctUntilChanged()
 
     suspend fun upsertInvestmentTransfer(transfer: InvestmentTransfer) {
@@ -222,30 +225,37 @@ class ExpenseRepository(context: Context) {
         }
     }
 
-    suspend fun setInvestmentGain(investmentId: String, gainCents: Long) {
+    /** Saves a valuation, replacing any other valuation of the same target in the same month. */
+    suspend fun upsertInvestmentValuation(valuation: InvestmentValuation) {
+        val month = YearMonth.from(valuation.occurredOn)
         dataStore.edit { preferences ->
-            val investments = decodeInvestments(preferences[investmentsKey]).map { investment ->
-                if (investment.id == investmentId) investment.copy(gainCents = gainCents) else investment
-            }
-            preferences[investmentsKey] = encodeInvestments(investments)
+            val valuations = decodeInvestmentValuations(preferences[investmentValuationsKey])
+                .filterNot { it.id == valuation.id || (it.targetId == valuation.targetId && YearMonth.from(it.occurredOn) == month) }
+            preferences[investmentValuationsKey] = encodeInvestmentValuations(valuations + valuation)
+        }
+    }
+
+    suspend fun deleteInvestmentValuation(valuationId: String) {
+        dataStore.edit { preferences ->
+            val valuations = decodeInvestmentValuations(preferences[investmentValuationsKey]).filterNot { it.id == valuationId }
+            preferences[investmentValuationsKey] = encodeInvestmentValuations(valuations)
         }
     }
 
     /**
-     * Removes an investment as if it had been sold: its allocations disappear (so the invested
-     * money is back in the general pot) and its gain is added to the pot's gain, so the pot ends
-     * up holding the investment's full current value.
+     * Removes an investment entirely, with its allocations and valuations: the money put into it
+     * is back in the general pot as if it had never been invested.
      */
     suspend fun deleteInvestment(investmentId: String) {
         dataStore.edit { preferences ->
-            val allInvestments = decodeInvestments(preferences[investmentsKey])
-            val removed = allInvestments.firstOrNull { it.id == investmentId } ?: return@edit
-            val investments = allInvestments.filterNot { it.id == investmentId }
-            preferences[generalPotGainCentsKey] = (preferences[generalPotGainCentsKey] ?: 0L) + removed.gainCents
+            val investments = decodeInvestments(preferences[investmentsKey]).filterNot { it.id == investmentId }
             preferences[investmentsKey] = encodeInvestments(investments)
             val allocations = decodeInvestmentAllocations(preferences[investmentAllocationsKey])
                 .filterNot { it.investmentId == investmentId }
             preferences[investmentAllocationsKey] = encodeInvestmentAllocations(allocations)
+            val valuations = decodeInvestmentValuations(preferences[investmentValuationsKey])
+                .filterNot { it.targetId == investmentId }
+            preferences[investmentValuationsKey] = encodeInvestmentValuations(valuations)
         }
     }
 
@@ -265,9 +275,6 @@ class ExpenseRepository(context: Context) {
         }
     }
 
-    suspend fun setGeneralPotGainCents(gainCents: Long) {
-        dataStore.edit { preferences -> preferences[generalPotGainCentsKey] = gainCents }
-    }
 
     suspend fun upsertExpense(expense: ExpenseEntry) {
         expenseDao.upsertExpense(expense)
@@ -384,7 +391,7 @@ class ExpenseRepository(context: Context) {
             .put("investmentTransfers", JSONArray(decodeInvestmentTransfers(preferences[investmentTransfersKey]).map { it.toJson() }))
             .put("investments", JSONArray(decodeInvestments(preferences[investmentsKey]).map { it.toJson() }))
             .put("investmentAllocations", JSONArray(decodeInvestmentAllocations(preferences[investmentAllocationsKey]).map { it.toJson() }))
-            .put("generalPotGainCents", preferences[generalPotGainCentsKey] ?: 0L)
+            .put("investmentValuations", JSONArray(decodeInvestmentValuations(preferences[investmentValuationsKey]).map { it.toJson() }))
             .toString()
     }
 
@@ -436,7 +443,8 @@ class ExpenseRepository(context: Context) {
             preferences[investmentTransfersKey] = encodeInvestmentTransfers(backup.investmentTransfers)
             preferences[investmentsKey] = encodeInvestments(backup.investments)
             preferences[investmentAllocationsKey] = encodeInvestmentAllocations(backup.investmentAllocations)
-            preferences[generalPotGainCentsKey] = backup.generalPotGainCents
+            preferences[investmentValuationsKey] = encodeInvestmentValuations(backup.investmentValuations)
+            preferences.remove(generalPotGainCentsKey)
             preferences.remove(balanceAdjustmentCentsKey)
             preferences[monthlyBalancesMigratedKey] = true
             preferences[balanceAdjustmentsCarryoverMigratedKey] = true
@@ -536,6 +544,20 @@ class ExpenseRepository(context: Context) {
                 mutablePreferences[monthlyBalanceAdjustmentsKey] = encodeMonthlyBalanceAdjustments(converted)
             }
             mutablePreferences[balanceAdjustmentsCarryoverMigratedKey] = true
+        }
+    }
+
+    /** Turns the undated gains stored by 0.1.x into valuations dated today (when they were last set). */
+    private suspend fun migrateUndatedInvestmentGains() {
+        dataStore.edit { preferences ->
+            val investments = decodeInvestments(preferences[investmentsKey])
+            val potGain = preferences[generalPotGainCentsKey] ?: 0L
+            if (potGain == 0L && investments.none { it.gainCents != 0L }) return@edit
+            val valuations = decodeInvestmentValuations(preferences[investmentValuationsKey]) +
+                legacyGainsToValuations(investments, potGain, LocalDate.now())
+            preferences[investmentValuationsKey] = encodeInvestmentValuations(valuations)
+            preferences[investmentsKey] = encodeInvestments(investments.map { it.copy(gainCents = 0L) })
+            preferences.remove(generalPotGainCentsKey)
         }
     }
 
@@ -731,6 +753,12 @@ class ExpenseRepository(context: Context) {
     private fun encodeInvestmentAllocations(allocations: List<InvestmentAllocation>): String =
         JSONArray(allocations.map { it.toJson() }).toString()
 
+    private fun decodeInvestmentValuations(rawJson: String?): List<InvestmentValuation> =
+        decodeJsonList(rawJson, InvestmentValuation::fromJson)
+
+    private fun encodeInvestmentValuations(valuations: List<InvestmentValuation>): String =
+        JSONArray(valuations.map { it.toJson() }).toString()
+
     private fun decodeBackup(rawBackup: String): BackupData? = runCatching {
         val root = JSONObject(rawBackup)
         val version = root.getInt("version")
@@ -743,6 +771,8 @@ class ExpenseRepository(context: Context) {
         val incomeItems = root.getJSONArray("incomes")
         val incomes = decodeExtraEntries(incomeItems.toString())
         check(incomes.size == incomeItems.length())
+
+        val backupInvestments = decodeInvestments(root.optJSONArray("investments")?.toString())
 
         BackupData(
             version = version,
@@ -758,9 +788,10 @@ class ExpenseRepository(context: Context) {
             }?.getLong("generalExtraLimitCents"),
             legacyBalanceAdjustmentCents = root.takeIf { it.has("balanceAdjustmentCents") }?.getLong("balanceAdjustmentCents"),
             investmentTransfers = decodeInvestmentTransfers(root.optJSONArray("investmentTransfers")?.toString()),
-            investments = decodeInvestments(root.optJSONArray("investments")?.toString()),
+            investments = backupInvestments.map { it.copy(gainCents = 0L) },
             investmentAllocations = decodeInvestmentAllocations(root.optJSONArray("investmentAllocations")?.toString()),
-            generalPotGainCents = root.optLong("generalPotGainCents", 0L),
+            investmentValuations = decodeInvestmentValuations(root.optJSONArray("investmentValuations")?.toString()) +
+                legacyGainsToValuations(backupInvestments, root.optLong("generalPotGainCents", 0L), LocalDate.now()),
         )
     }.getOrNull()
 }

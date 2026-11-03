@@ -81,7 +81,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cris.sumptus.CategorySpendSummary
 import com.cris.sumptus.CategoryBudgetSummary
 import com.cris.sumptus.InvestmentMovement
-import com.cris.sumptus.InvestmentOverview
+import com.cris.sumptus.actionDateFor
 import com.cris.sumptus.InvestmentSummary
 import com.cris.sumptus.BudgetOverview
 import com.cris.sumptus.MainViewModel
@@ -249,7 +249,10 @@ fun SumptusApp(viewModel: MainViewModel = viewModel()) {
                 )
 
                 SumptusSection.INVERSIONES -> InvestmentsScreen(
-                    overview = uiState.investmentOverview,
+                    uiState = uiState,
+                    onSelectMonth = viewModel::selectMonth,
+                    onPreviousMonth = viewModel::showPreviousMonth,
+                    onNextMonth = viewModel::showNextMonth,
                     onSaveTransfer = viewModel::saveInvestmentTransfer,
                     onSetPotValue = viewModel::setGeneralPotValue,
                     onAddInvestment = viewModel::addInvestment,
@@ -1710,7 +1713,10 @@ private sealed interface InvestmentDialog {
 
 @Composable
 private fun InvestmentsScreen(
-    overview: InvestmentOverview,
+    uiState: SumptusUiState,
+    onSelectMonth: (YearMonth) -> Unit,
+    onPreviousMonth: () -> Unit,
+    onNextMonth: () -> Unit,
     onSaveTransfer: (amount: String, notes: String, date: String, toInvestments: Boolean) -> Boolean,
     onSetPotValue: (String) -> Boolean,
     onAddInvestment: (name: String, initialAmount: String) -> Boolean,
@@ -1719,6 +1725,7 @@ private fun InvestmentsScreen(
     onDeleteInvestment: (String) -> Unit,
     onDeleteMovement: (InvestmentMovement) -> Unit,
 ) {
+    val overview = uiState.investmentOverview
     var dialog by remember { mutableStateOf<InvestmentDialog?>(null) }
     var showAllMovements by rememberSaveable { mutableStateOf(false) }
     val close = { dialog = null }
@@ -1728,6 +1735,7 @@ private fun InvestmentsScreen(
         null -> Unit
         is InvestmentDialog.Transfer -> TransferDialog(
             toInvestments = current.toInvestments,
+            defaultDate = actionDateFor(overview.month),
             availableCents = if (current.toInvestments) null else overview.potValueCents,
             onDismiss = close,
             onSave = { amount, notes, date ->
@@ -1832,6 +1840,16 @@ private fun InvestmentsScreen(
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        item {
+            MonthSelectorCard(
+                selectedMonth = uiState.selectedMonth,
+                monthLabel = uiState.monthLabel,
+                onSelectMonth = onSelectMonth,
+                onPreviousMonth = onPreviousMonth,
+                onNextMonth = onNextMonth,
+            )
+        }
+
         item {
             Card(
                 shape = RoundedCornerShape(24.dp),
@@ -2022,7 +2040,11 @@ private fun InvestmentMovementRow(movement: InvestmentMovement, onDelete: () -> 
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        Text(formatCurrency(movement.amountCents.absoluteValue), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            formatCurrency(if (movement is InvestmentMovement.Valuation) movement.amountCents else movement.amountCents.absoluteValue),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
         IconButton(onClick = onDelete) {
             Icon(Icons.Rounded.DeleteOutline, contentDescription = str.deleteMovement)
         }
@@ -2036,6 +2058,9 @@ private fun movementTitle(movement: InvestmentMovement): String = when (movement
         val name = movement.investmentName.ifBlank { str.investmentFallback }
         if (movement.amountCents >= 0L) str.potTo(name) else str.toPot(name)
     }
+    is InvestmentMovement.Valuation -> str.valueUpdatedFor(
+        if (movement.isPot) str.generalAccount else movement.targetName ?: str.investmentFallback,
+    )
 }
 
 @Composable
@@ -2070,13 +2095,14 @@ private fun AmountDialog(
 @Composable
 private fun TransferDialog(
     toInvestments: Boolean,
+    defaultDate: LocalDate,
     availableCents: Long?,
     onDismiss: () -> Unit,
     onSave: (amount: String, notes: String, date: String) -> Unit,
 ) {
     var amountInput by rememberSaveable { mutableStateOf("") }
     var notesInput by rememberSaveable { mutableStateOf("") }
-    var dateInput by rememberSaveable { mutableStateOf(formatExpenseInputDate(LocalDate.now())) }
+    var dateInput by rememberSaveable { mutableStateOf(formatExpenseInputDate(defaultDate)) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (toInvestments) str.moveToInvestments else str.backToBalance) },

@@ -104,3 +104,51 @@ data class InvestmentAllocation(
         }.getOrNull()
     }
 }
+
+/** [InvestmentValuation.targetId] used for the general pot instead of an investment id. */
+const val GENERAL_POT_ID = "general"
+
+/**
+ * The value of the general pot or of one investment as of a date, stored as the gain over the
+ * money put in up to that date. From that date on, the value is `invested + gainCents` until a
+ * later valuation replaces it, so updating September never touches October or November values
+ * that were set on their own. There is at most one valuation per target and month.
+ */
+data class InvestmentValuation(
+    val id: String = UUID.randomUUID().toString(),
+    val targetId: String,
+    val occurredOn: LocalDate,
+    val gainCents: Long,
+    val createdAtEpochMillis: Long = System.currentTimeMillis(),
+) {
+    fun toJson(): JSONObject = JSONObject()
+        .put("id", id)
+        .put("targetId", targetId)
+        .put("occurredOn", occurredOn.format(DateTimeFormatter.ISO_LOCAL_DATE))
+        .put("gainCents", gainCents)
+        .put("createdAtEpochMillis", createdAtEpochMillis)
+
+    companion object {
+        fun fromJson(json: JSONObject): InvestmentValuation? = runCatching {
+            InvestmentValuation(
+                id = json.optString("id").ifBlank { UUID.randomUUID().toString() },
+                targetId = json.getString("targetId"),
+                occurredOn = LocalDate.parse(json.getString("occurredOn")),
+                gainCents = json.getLong("gainCents"),
+                createdAtEpochMillis = json.optLong("createdAtEpochMillis", System.currentTimeMillis()),
+            )
+        }.getOrNull()
+    }
+}
+
+/** Turns the old undated gains (one per investment plus the pot's) into valuations dated [date]. */
+internal fun legacyGainsToValuations(
+    investments: List<Investment>,
+    potGainCents: Long,
+    date: LocalDate,
+): List<InvestmentValuation> = buildList {
+    if (potGainCents != 0L) add(InvestmentValuation(targetId = GENERAL_POT_ID, occurredOn = date, gainCents = potGainCents))
+    investments.filter { it.gainCents != 0L }.forEach {
+        add(InvestmentValuation(targetId = it.id, occurredOn = date, gainCents = it.gainCents))
+    }
+}

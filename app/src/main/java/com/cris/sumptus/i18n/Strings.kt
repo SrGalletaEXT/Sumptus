@@ -140,9 +140,10 @@ class Strings(val language: AppLanguage) {
     fun invested(amount: String) = t("Invertido $amount", "Invested $amount")
     fun deleteQuestion(name: String) = t("¿Eliminar $name?", "Delete $name?")
     fun deleteInvestmentText(value: String) = t(
-        "Su valor actual ($value) vuelve a la cuenta general y se borran sus movimientos.",
-        "Its current value ($value) goes back to the general account and its movements are deleted.",
+        "Se borra con todos sus movimientos y valores; lo invertido vuelve a la cuenta general. Valor actual: $value.",
+        "It is deleted with all its movements and values; the money put in goes back to the general account. Current value: $value.",
     )
+    fun valueUpdatedFor(name: String) = t("Valor de $name", "$name value")
     val balanceToPot get() = t("Saldo → Cuenta general", "Balance → General account")
     val potToBalance get() = t("Cuenta general → Saldo", "General account → Balance")
     val investmentFallback get() = t("Inversión", "Investment")

@@ -11,6 +11,8 @@ import com.cris.sumptus.data.IncomeType
 import com.cris.sumptus.data.Investment
 import com.cris.sumptus.data.InvestmentAllocation
 import com.cris.sumptus.data.InvestmentTransfer
+import com.cris.sumptus.data.InvestmentValuation
+import com.cris.sumptus.data.GENERAL_POT_ID
 import com.cris.sumptus.data.categoryColorKey
 import com.cris.sumptus.i18n.AppLanguage
 import com.cris.sumptus.i18n.Strings
@@ -257,10 +259,24 @@ sealed interface InvestmentMovement {
         override val occurredOn = allocation.occurredOn
         override val createdAtEpochMillis = allocation.createdAtEpochMillis
     }
+
+    /** The value set for the pot or an investment; [amountCents] is the resulting value. */
+    data class Valuation(
+        val valuation: InvestmentValuation,
+        val targetName: String?,
+        override val amountCents: Long,
+    ) : InvestmentMovement {
+        override val id = valuation.id
+        override val notes = ""
+        override val occurredOn = valuation.occurredOn
+        override val createdAtEpochMillis = valuation.createdAtEpochMillis
+        val isPot get() = valuation.targetId == GENERAL_POT_ID
+    }
 }
 
 data class InvestmentOverview(
-    /** Net money moved from the Saldo into investments (transfers in minus transfers out). */
+    val month: YearMonth,
+    /** Net money moved from the Saldo into investments up to the end of [month]. */
     val contributedCents: Long,
     /** Cash sitting in the general pot (e.g. the remunerated account), interest included. */
     val potValueCents: Long,
@@ -268,37 +284,70 @@ data class InvestmentOverview(
     val investments: List<InvestmentSummary>,
     val totalValueCents: Long,
     val totalGainCents: Long,
+    /** Movements and valuations dated in [month]. */
     val movements: List<InvestmentMovement>,
 ) {
     companion object {
-        fun empty() = InvestmentOverview(0L, 0L, 0L, emptyList(), 0L, 0L, emptyList())
+        fun empty() = InvestmentOverview(YearMonth.now(), 0L, 0L, 0L, emptyList(), 0L, 0L, emptyList())
     }
 }
 
+/** The state of every investment at the end of [month]. */
 internal fun buildInvestmentOverview(
     transfers: List<InvestmentTransfer>,
     investments: List<Investment>,
     allocations: List<InvestmentAllocation>,
-    potGainCents: Long,
+    valuations: List<InvestmentValuation>,
+    month: YearMonth,
 ): InvestmentOverview {
-    val contributedCents = transfers.sumOf { it.amountCents }
-    val allocationsByInvestment = allocations.groupBy { it.investmentId }
+    val monthEnd = month.atEndOfMonth()
+    fun investedIn(targetId: String, until: LocalDate): Long = if (targetId == GENERAL_POT_ID) {
+        transfers.filter { it.occurredOn <= until }.sumOf { it.amountCents } -
+            allocations.filter { it.occurredOn <= until }.sumOf { it.amountCents }
+    } else {
+        allocations.filter { it.investmentId == targetId && it.occurredOn <= until }.sumOf { it.amountCents }
+    }
+    val latestValuation = valuations
+        .filter { it.occurredOn <= monthEnd }
+        .groupBy { it.targetId }
+        .mapValues { (_, items) -> items.maxWith(compareBy<InvestmentValuation> { it.occurredOn }.thenBy { it.createdAtEpochMillis }) }
+    fun gainOf(targetId: String): Long = latestValuation[targetId]?.gainCents ?: 0L
+
+    val contributedCents = transfers.filter { it.occurredOn <= monthEnd }.sumOf { it.amountCents }
+    val potGainCents = gainOf(GENERAL_POT_ID)
+    val potValueCents = investedIn(GENERAL_POT_ID, monthEnd) + potGainCents
     val summaries = investments
         .sortedBy { it.createdAtEpochMillis }
-        .map { investment ->
-            val investedCents = allocationsByInvestment[investment.id]?.sumOf { it.amountCents } ?: 0L
-            InvestmentSummary(investment, investedCents, investedCents + investment.gainCents)
+        .filter { investment ->
+            val hasActivityByMonthEnd = allocations.any { it.investmentId == investment.id && it.occurredOn <= monthEnd } ||
+                investment.id in latestValuation
+            val hasNoActivityAtAll = allocations.none { it.investmentId == investment.id } &&
+                valuations.none { it.targetId == investment.id }
+            hasActivityByMonthEnd || hasNoActivityAtAll
         }
-    val potValueCents = contributedCents - allocations.sumOf { it.amountCents } + potGainCents
+        .map { investment ->
+            val investedCents = investedIn(investment.id, monthEnd)
+            InvestmentSummary(investment, investedCents, investedCents + gainOf(investment.id))
+        }
     val totalValueCents = potValueCents + summaries.sumOf { it.valueCents }
     val namesById = investments.associate { it.id to it.name }
+    fun inMonth(date: LocalDate) = YearMonth.from(date) == month
     val movements = (
-        transfers.map { InvestmentMovement.Transfer(it) } +
-            allocations.map { InvestmentMovement.Allocation(it, namesById[it.investmentId].orEmpty()) }
+        transfers.filter { inMonth(it.occurredOn) }.map { InvestmentMovement.Transfer(it) } +
+            allocations.filter { inMonth(it.occurredOn) }
+                .map { InvestmentMovement.Allocation(it, namesById[it.investmentId].orEmpty()) } +
+            valuations.filter { inMonth(it.occurredOn) }.map { valuation ->
+                InvestmentMovement.Valuation(
+                    valuation = valuation,
+                    targetName = namesById[valuation.targetId],
+                    amountCents = investedIn(valuation.targetId, valuation.occurredOn) + valuation.gainCents,
+                )
+            }
         ).sortedWith(
         compareByDescending<InvestmentMovement> { it.occurredOn }.thenByDescending { it.createdAtEpochMillis },
     )
     return InvestmentOverview(
+        month = month,
         contributedCents = contributedCents,
         potValueCents = potValueCents,
         potGainCents = potGainCents,
@@ -308,6 +357,10 @@ internal fun buildInvestmentOverview(
         movements = movements,
     )
 }
+
+/** Date used for actions done while looking at [month]: today in the current month, else its last day. */
+internal fun actionDateFor(month: YearMonth, today: LocalDate = LocalDate.now()): LocalDate =
+    if (month == YearMonth.from(today)) today else month.atEndOfMonth()
 
 data class SumptusUiState(
     val selectedMonth: YearMonth,
@@ -373,16 +426,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val transfers: List<InvestmentTransfer>,
         val investments: List<Investment>,
         val allocations: List<InvestmentAllocation>,
-        val potGainCents: Long,
+        val valuations: List<InvestmentValuation>,
     )
 
     private val investmentInputs = combine(
         repository.investmentTransfers,
         repository.investments,
         repository.investmentAllocations,
-        repository.generalPotGainCents,
-    ) { transfers, investments, allocations, potGainCents ->
-        InvestmentInputs(transfers, investments, allocations, potGainCents)
+        repository.investmentValuations,
+    ) { transfers, investments, allocations, valuations ->
+        InvestmentInputs(transfers, investments, allocations, valuations)
     }
 
     private data class EntryInputs(
@@ -723,7 +776,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val overview = uiState.value.investmentOverview
         val potWithoutGain = overview.potValueCents - overview.potGainCents
         viewModelScope.launch {
-            repository.setGeneralPotGainCents(targetCents - potWithoutGain)
+            repository.upsertInvestmentValuation(
+                InvestmentValuation(
+                    targetId = GENERAL_POT_ID,
+                    occurredOn = actionDateFor(overview.month),
+                    gainCents = targetCents - potWithoutGain,
+                ),
+            )
             feedback.value = strings.valueUpdated
         }
         return true
@@ -750,7 +809,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.addInvestment(investment)
             if (initialCents > 0L) {
                 repository.upsertInvestmentAllocation(
-                    InvestmentAllocation(investmentId = investment.id, amountCents = initialCents, occurredOn = LocalDate.now()),
+                    InvestmentAllocation(
+                        investmentId = investment.id,
+                        amountCents = initialCents,
+                        occurredOn = actionDateFor(uiState.value.investmentOverview.month),
+                    ),
                 )
             }
             feedback.value = strings.investmentAdded
@@ -777,7 +840,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 InvestmentAllocation(
                     investmentId = investmentId,
                     amountCents = if (intoInvestment) amountCents else -amountCents,
-                    occurredOn = LocalDate.now(),
+                    occurredOn = actionDateFor(overview.month),
                 ),
             )
             feedback.value = if (intoInvestment) strings.moneyInvested else strings.returnedToPot
@@ -792,8 +855,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return false
         }
         val summary = uiState.value.investmentOverview.investments.firstOrNull { it.investment.id == investmentId } ?: return false
+        val gainCents = targetCents - summary.investedCents
+        val occurredOn = actionDateFor(uiState.value.investmentOverview.month)
         viewModelScope.launch {
-            repository.setInvestmentGain(investmentId, targetCents - summary.investedCents)
+            repository.upsertInvestmentValuation(
+                InvestmentValuation(targetId = investmentId, occurredOn = occurredOn, gainCents = gainCents),
+            )
             feedback.value = strings.valueUpdated
         }
         return true
@@ -811,6 +878,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             when (movement) {
                 is InvestmentMovement.Transfer -> repository.deleteInvestmentTransfer(movement.id)
                 is InvestmentMovement.Allocation -> repository.deleteInvestmentAllocation(movement.id)
+                is InvestmentMovement.Valuation -> repository.deleteInvestmentValuation(movement.id)
             }
             feedback.value = strings.movementDeleted
         }
@@ -883,7 +951,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 transfers,
                 investmentInputs.investments,
                 investmentInputs.allocations,
-                investmentInputs.potGainCents,
+                investmentInputs.valuations,
+                selectedMonth,
             ),
             isDarkTheme = isDarkTheme,
             language = language,
