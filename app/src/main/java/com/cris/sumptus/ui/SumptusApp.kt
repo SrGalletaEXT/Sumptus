@@ -47,6 +47,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -1940,20 +1941,25 @@ private fun InvestmentsScreen(
                             Modifier.weight(1f),
                         )
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        TextButton(
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        FilledTonalButton(
                             onClick = { dialog = InvestmentDialog.Transfer(toInvestments = true) },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                         ) {
                             Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Text(" " + str.investShort)
+                            Text(" " + str.investShort, maxLines = 1)
                         }
-                        TextButton(
+                        FilledTonalButton(
                             onClick = { dialog = InvestmentDialog.Transfer(toInvestments = false) },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                         ) {
                             Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Text(" " + str.toBalanceShort)
+                            Text(" " + str.toBalanceShort, maxLines = 1)
                         }
                     }
                 }

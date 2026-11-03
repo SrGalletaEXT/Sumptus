@@ -137,6 +137,13 @@ private data class BalanceMovement(
     val deltaCents: Long,
 )
 
+/** Newest first by the date the user gave; same-day entries by when they were added. */
+private fun <T> recentFirst(
+    date: (T) -> LocalDate,
+    createdAt: (T) -> Long,
+    id: (T) -> String,
+): Comparator<T> = compareByDescending(date).thenByDescending(createdAt).thenByDescending(id)
+
 internal fun buildRecentExpenses(
     expenses: List<ExpenseEntry>,
     extraEntries: List<ExtraEntry>,
@@ -163,7 +170,7 @@ internal fun buildRecentExpenses(
     movementsByMonth.forEach { (month, movements) ->
         var balance = monthEndingBalances.getValue(month)
 
-        movements.sortedWith(compareByDescending<BalanceMovement> { it.createdAtEpochMillis }.thenByDescending { it.id })
+        movements.sortedWith(recentFirst(BalanceMovement::occurredOn, BalanceMovement::createdAtEpochMillis, BalanceMovement::id))
             .forEach { movement ->
                 balances[movement.id] = balance
                 balance -= movement.deltaCents
@@ -175,7 +182,7 @@ internal fun buildRecentExpenses(
             extraEntries.map { RecentExpense(null, balances.getValue(it.id), extra = it) to it.createdAtEpochMillis } +
             investmentTransfers.map { RecentExpense(null, balances.getValue(it.id), transfer = it) to it.createdAtEpochMillis }
         )
-        .sortedWith(compareByDescending<Pair<RecentExpense, Long>> { it.second }.thenByDescending { it.first.id })
+        .sortedWith(recentFirst({ it.first.occurredOn }, { it.second }, { it.first.id }))
         .map { it.first }
 }
 

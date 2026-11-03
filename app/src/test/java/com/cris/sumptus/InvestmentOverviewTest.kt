@@ -157,4 +157,19 @@ class InvestmentOverviewTest {
         assertEquals("i", recent.single().id)
         assertEquals(3_000L, recent.single().balanceAfterCents)
     }
+
+    @Test
+    fun latestActivityFollowsTheDateGivenNotTheOrderAdded() {
+        val older = ExpenseEntry(
+            id = "older", title = "", amountCents = 100L, category = "", notes = "",
+            occurredOn = nov.atDay(1), createdAtEpochMillis = 50L,
+        )
+        val newer = older.copy(id = "newer", amountCents = 200L, occurredOn = nov.atDay(5), createdAtEpochMillis = 10L)
+
+        val recent = buildRecentExpenses(listOf(older, newer), emptyList(), mapOf(nov.toString() to 1_000L))
+
+        assertEquals(listOf("newer", "older"), recent.map { it.id })
+        assertEquals(700L, recent[0].balanceAfterCents)
+        assertEquals(900L, recent[1].balanceAfterCents)
+    }
 }
