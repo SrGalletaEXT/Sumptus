@@ -25,6 +25,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
 import androidx.compose.material.icons.automirrored.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.AddCircle
@@ -1388,13 +1390,23 @@ private fun RecentExpenseRow(
 ) {
     val expense = recentExpense.expense
     val transfer = recentExpense.transfer
-    val color = if (expense != null) categoryColor(expense.category, categoryColors) else neutralColor()
+    val extra = recentExpense.extra
+    val color = when {
+        expense != null -> categoryColor(expense.category, categoryColors)
+        extra != null -> incomeColor
+        else -> neutralColor()
+    }
     val title = when {
         expense != null -> expense.notes.ifBlank { expense.category }
+        extra != null -> extra.notes.ifBlank { incomeLabel(extra.type) }
         transfer!!.amountCents >= 0L -> "→ " + str.investments
         else -> "← " + str.backToBalance
     }
-    val subtitle = expense?.category ?: transfer?.notes?.ifBlank { str.generalAccount }.orEmpty()
+    val subtitle = when {
+        expense != null -> expense.category
+        extra != null -> incomeLabel(extra.type)
+        else -> transfer?.notes?.ifBlank { str.generalAccount }.orEmpty()
+    }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -1427,10 +1439,14 @@ private fun RecentExpenseRow(
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
-                formatCurrency(recentExpense.amountCents.absoluteValue),
+                if (extra != null) formatSignedCurrency(extra.amountCents) else formatCurrency(recentExpense.amountCents.absoluteValue),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
-                color = if (expense != null) expenseColor else neutralColor(),
+                color = when {
+                    expense != null -> expenseColor
+                    extra != null -> incomeColor
+                    else -> neutralColor()
+                },
             )
             Text(
                 formatCurrency(recentExpense.balanceAfterCents),
@@ -1924,12 +1940,20 @@ private fun InvestmentsScreen(
                             Modifier.weight(1f),
                         )
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(onClick = { dialog = InvestmentDialog.Transfer(toInvestments = true) }, modifier = Modifier.weight(1f)) {
-                            Text(str.moveFromBalance)
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        TextButton(
+                            onClick = { dialog = InvestmentDialog.Transfer(toInvestments = true) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text(" " + str.investShort)
                         }
-                        OutlinedButton(onClick = { dialog = InvestmentDialog.Transfer(toInvestments = false) }, modifier = Modifier.weight(1f)) {
-                            Text(str.backToBalance)
+                        TextButton(
+                            onClick = { dialog = InvestmentDialog.Transfer(toInvestments = false) },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        ) {
+                            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text(" " + str.toBalanceShort)
                         }
                     }
                 }

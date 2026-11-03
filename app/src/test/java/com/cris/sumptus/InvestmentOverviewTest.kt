@@ -145,4 +145,16 @@ class InvestmentOverviewTest {
         assertEquals(500L, recent[0].balanceAfterCents)
         assertEquals(900L, recent[1].balanceAfterCents)
     }
+
+    @Test
+    fun incomesShowUpInLatestActivity() {
+        val income = com.cris.sumptus.data.ExtraEntry(
+            id = "i", amountCents = 2_000L, notes = "", occurredOn = nov.atDay(1),
+            type = com.cris.sumptus.data.IncomeType.SALARY, createdAtEpochMillis = 3L,
+        )
+        val recent = buildRecentExpenses(emptyList(), listOf(income), mapOf(nov.toString() to 1_000L))
+
+        assertEquals("i", recent.single().id)
+        assertEquals(3_000L, recent.single().balanceAfterCents)
+    }
 }

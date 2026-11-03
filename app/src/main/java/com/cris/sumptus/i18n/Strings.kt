@@ -116,6 +116,8 @@ class Strings(val language: AppLanguage) {
     val contributed get() = t("Aportado", "Contributed")
     val returnLabel get() = t("Rentabilidad", "Return")
     val moveFromBalance get() = t("Mover desde saldo", "Move from balance")
+    val investShort get() = t("Invertir", "Invest")
+    val toBalanceShort get() = t("Al saldo", "To balance")
     val backToBalance get() = t("Volver al saldo", "Back to balance")
     val moveToInvestments get() = t("Mover a inversiones", "Move to investments")
     val newInvestment get() = t("Nueva inversión", "New investment")

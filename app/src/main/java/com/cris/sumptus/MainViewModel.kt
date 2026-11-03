@@ -42,15 +42,16 @@ data class MonthExpenseComparison(
     val categories: List<CategorySpendSummary>,
 )
 
-/** One entry of the "latest activity" list: an expense or a move between Saldo and investments. */
+/** One entry of the "latest activity" list: an expense, an income or a move to/from investments. */
 data class RecentExpense(
     val expense: ExpenseEntry?,
     val balanceAfterCents: Long,
     val transfer: InvestmentTransfer? = null,
+    val extra: ExtraEntry? = null,
 ) {
-    val id: String get() = expense?.id ?: transfer!!.id
-    val amountCents: Long get() = expense?.amountCents ?: transfer!!.amountCents
-    val occurredOn: LocalDate get() = expense?.occurredOn ?: transfer!!.occurredOn
+    val id: String get() = expense?.id ?: extra?.id ?: transfer!!.id
+    val amountCents: Long get() = expense?.amountCents ?: extra?.amountCents ?: transfer!!.amountCents
+    val occurredOn: LocalDate get() = expense?.occurredOn ?: extra?.occurredOn ?: transfer!!.occurredOn
 }
 
 data class CategoryBudgetSummary(
@@ -128,13 +129,12 @@ internal fun buildMonthEndingBalances(
     return balances
 }
 
-/** A movement that changes the Saldo, used to rebuild the balance right after each expense. */
+/** A movement that changes the Saldo, used to rebuild the balance right after each one. */
 private data class BalanceMovement(
     val id: String,
     val occurredOn: LocalDate,
     val createdAtEpochMillis: Long,
     val deltaCents: Long,
-    val recordsBalance: Boolean,
 )
 
 internal fun buildRecentExpenses(
@@ -143,12 +143,12 @@ internal fun buildRecentExpenses(
     monthlyBalanceAdjustments: Map<String, Long>,
     investmentTransfers: List<InvestmentTransfer> = emptyList(),
 ): List<RecentExpense> {
-    if (expenses.isEmpty() && investmentTransfers.isEmpty()) return emptyList()
+    if (expenses.isEmpty() && extraEntries.isEmpty() && investmentTransfers.isEmpty()) return emptyList()
 
     val movementsByMonth = buildList {
-        expenses.forEach { add(BalanceMovement(it.id, it.occurredOn, it.createdAtEpochMillis, -it.amountCents, recordsBalance = true)) }
-        extraEntries.forEach { add(BalanceMovement(it.id, it.occurredOn, it.createdAtEpochMillis, it.amountCents, recordsBalance = false)) }
-        investmentTransfers.forEach { add(BalanceMovement(it.id, it.occurredOn, it.createdAtEpochMillis, -it.amountCents, recordsBalance = true)) }
+        expenses.forEach { add(BalanceMovement(it.id, it.occurredOn, it.createdAtEpochMillis, -it.amountCents)) }
+        extraEntries.forEach { add(BalanceMovement(it.id, it.occurredOn, it.createdAtEpochMillis, it.amountCents)) }
+        investmentTransfers.forEach { add(BalanceMovement(it.id, it.occurredOn, it.createdAtEpochMillis, -it.amountCents)) }
     }.groupBy { YearMonth.from(it.occurredOn) }
     val lastMonth = (movementsByMonth.keys + monthlyBalanceAdjustments.keys.map(YearMonth::parse)).max()
     val monthEndingBalances = buildMonthEndingBalances(
@@ -165,13 +165,14 @@ internal fun buildRecentExpenses(
 
         movements.sortedWith(compareByDescending<BalanceMovement> { it.createdAtEpochMillis }.thenByDescending { it.id })
             .forEach { movement ->
-                if (movement.recordsBalance) balances[movement.id] = balance
+                balances[movement.id] = balance
                 balance -= movement.deltaCents
             }
     }
 
     return (
         expenses.map { RecentExpense(it, balances.getValue(it.id)) to it.createdAtEpochMillis } +
+            extraEntries.map { RecentExpense(null, balances.getValue(it.id), extra = it) to it.createdAtEpochMillis } +
             investmentTransfers.map { RecentExpense(null, balances.getValue(it.id), transfer = it) to it.createdAtEpochMillis }
         )
         .sortedWith(compareByDescending<Pair<RecentExpense, Long>> { it.second }.thenByDescending { it.first.id })
