@@ -12,6 +12,8 @@ import com.cris.sumptus.data.Investment
 import com.cris.sumptus.data.InvestmentAllocation
 import com.cris.sumptus.data.InvestmentTransfer
 import com.cris.sumptus.data.categoryColorKey
+import com.cris.sumptus.i18n.AppLanguage
+import com.cris.sumptus.i18n.Strings
 import com.cris.sumptus.data.normalizeCategoryName
 import java.time.LocalDate
 import java.time.YearMonth
@@ -324,6 +326,7 @@ data class SumptusUiState(
     val historyEntries: List<TimelineEntry>,
     val investmentOverview: InvestmentOverview,
     val isDarkTheme: Boolean,
+    val language: AppLanguage = AppLanguage.systemDefault(),
     val feedbackMessage: String? = null,
 ) {
     companion object {
@@ -351,7 +354,8 @@ data class SumptusUiState(
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = ExpenseRepository(application.applicationContext)
-    private val locale = Locale.forLanguageTag("es-ES")
+    private val language = repository.language.stateIn(viewModelScope, SharingStarted.Eagerly, AppLanguage.systemDefault())
+    private val strings: Strings get() = Strings(language.value)
     private val feedback = MutableStateFlow<String?>(null)
     private val selectedMonth = MutableStateFlow(YearMonth.now())
     private data class SummaryInputs(
@@ -422,8 +426,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         investmentInputs,
         feedback,
         repository.darkTheme,
-    ) { inputs, investmentData, message, isDarkTheme ->
+        language,
+    ) { inputs, investmentData, message, isDarkTheme, appLanguage ->
         buildUiState(
+            language = appLanguage,
             investmentInputs = investmentData,
             expenses = inputs.expenses,
             storedCategories = inputs.categories,
@@ -466,19 +472,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ): Boolean {
         val normalizedCategory = normalizeCategoryName(category)
         if (normalizedCategory.isBlank()) {
-            feedback.value = "Elige categoría."
+            feedback.value = strings.chooseCategory
             return false
         }
 
         val amountCents = parseAmountToCents(amountInput)
         if (amountCents == null || amountCents <= 0) {
-            feedback.value = "Importe no válido."
+            feedback.value = strings.invalidAmount
             return false
         }
 
         val occurredOn = parseExpenseInputDate(occurredOnInput)
         if (occurredOn == null) {
-            feedback.value = "Fecha no válida."
+            feedback.value = strings.invalidDate
             return false
         }
 
@@ -498,7 +504,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     createdAtEpochMillis = existingExpense?.createdAtEpochMillis ?: System.currentTimeMillis(),
                 ),
             )
-            feedback.value = if (existingExpense == null) "Gasto guardado." else "Gasto actualizado."
+            feedback.value = if (existingExpense == null) strings.expenseSaved else strings.expenseUpdated
         }
         return true
     }
@@ -512,13 +518,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ): Boolean {
         val amountCents = parseAmountToCents(amountInput)
         if (amountCents == null || amountCents <= 0) {
-            feedback.value = "Importe no válido."
+            feedback.value = strings.invalidAmount
             return false
         }
 
         val occurredOn = parseExpenseInputDate(occurredOnInput)
         if (occurredOn == null) {
-            feedback.value = "Fecha no válida."
+            feedback.value = strings.invalidDate
             return false
         }
 
@@ -534,8 +540,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     createdAtEpochMillis = existingExtra?.createdAtEpochMillis ?: System.currentTimeMillis(),
                 ),
             )
-            val label = if (type == IncomeType.SALARY) "Sueldo" else "Extra"
-            feedback.value = if (existingExtra == null) "$label guardado." else "$label actualizado."
+            feedback.value = when {
+                type == IncomeType.SALARY && existingExtra == null -> strings.salarySaved
+                type == IncomeType.SALARY -> strings.salaryUpdated
+                existingExtra == null -> strings.extraSaved
+                else -> strings.extraUpdated
+            }
         }
         return true
     }
@@ -543,7 +553,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setCurrentBalance(amountInput: String): Boolean {
         val targetBalanceCents = parseAmountToCents(amountInput)
         if (targetBalanceCents == null) {
-            feedback.value = "Saldo no válido."
+            feedback.value = strings.invalidBalance
             return false
         }
 
@@ -554,7 +564,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 state.selectedMonth,
                 targetBalanceCents - calculatedWithoutAdjustment,
             )
-            feedback.value = "Saldo ajustado."
+            feedback.value = strings.balanceAdjusted
         }
         return true
     }
@@ -562,18 +572,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun addCategory(categoryName: String): Boolean {
         val normalizedCategory = normalizeCategoryName(categoryName)
         if (normalizedCategory.isBlank()) {
-            feedback.value = "Escribe una categoría."
+            feedback.value = strings.typeCategory
             return false
         }
 
         if (uiState.value.categories.any { it.equals(normalizedCategory, ignoreCase = true) }) {
-            feedback.value = "La categoría ya existe."
+            feedback.value = strings.categoryExists
             return false
         }
 
         viewModelScope.launch {
             repository.addCategory(normalizedCategory)
-            feedback.value = "Categoría añadida."
+            feedback.value = strings.categoryAdded
         }
         return true
     }
@@ -581,13 +591,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteCategory(categoryName: String) {
         viewModelScope.launch {
             repository.deleteCategory(categoryName)
-            feedback.value = "Categoría eliminada."
+            feedback.value = strings.categoryDeleted
         }
     }
 
     fun setCategoryColor(categoryName: String, colorArgb: Long) {
         viewModelScope.launch {
             repository.setCategoryColor(categoryName, colorArgb)
+        }
+    }
+
+    fun setLanguage(language: AppLanguage) {
+        viewModelScope.launch {
+            repository.setLanguage(language)
         }
     }
 
@@ -600,14 +616,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setCategoryBudget(category: String, amountInput: String): Boolean {
         val amountCents = parseAmountToCents(amountInput)
         if (amountCents == null || amountCents <= 0L) {
-            feedback.value = "Presupuesto no válido."
+            feedback.value = strings.invalidBudget
             return false
         }
 
         val state = uiState.value
         viewModelScope.launch {
             repository.setCategoryBudget(state.selectedMonth, category, amountCents)
-            feedback.value = "Presupuesto guardado."
+            feedback.value = strings.budgetSaved
         }
         return true
     }
@@ -615,13 +631,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setGeneralExtraLimit(amountInput: String): Boolean {
         val amountCents = if (amountInput.isBlank()) null else parseAmountToCents(amountInput)
         if (amountInput.isNotBlank() && (amountCents == null || amountCents < 0L)) {
-            feedback.value = "Límite no válido."
+            feedback.value = strings.invalidLimit
             return false
         }
 
         viewModelScope.launch {
             repository.setGeneralExtraLimitCents(uiState.value.selectedMonth, amountCents)
-            feedback.value = "Límite guardado."
+            feedback.value = strings.limitSaved
         }
         return true
     }
@@ -634,9 +650,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     stream.write(backup.toByteArray(Charsets.UTF_8))
                 } ?: error("No se pudo crear el archivo.")
             }.onSuccess {
-                feedback.value = "Datos exportados."
+                feedback.value = strings.dataExported
             }.onFailure {
-                feedback.value = "No se pudo exportar."
+                feedback.value = strings.exportFailed
             }
         }
     }
@@ -650,9 +666,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ?: error("No se pudo abrir el archivo.")
                 repository.importBackup(rawBackup)
             }.onSuccess { imported ->
-                feedback.value = if (imported) "Datos importados." else "Copia no válida."
+                feedback.value = if (imported) strings.dataImported else strings.invalidBackup
             }.onFailure {
-                feedback.value = "No se pudo importar."
+                feedback.value = strings.importFailed
             }
         }
     }
@@ -660,14 +676,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteExpense(expenseId: String) {
         viewModelScope.launch {
             repository.deleteExpense(expenseId)
-            feedback.value = "Gasto eliminado."
+            feedback.value = strings.expenseDeleted
         }
     }
 
     fun deleteIncome(income: ExtraEntry) {
         viewModelScope.launch {
             repository.deleteExtraEntry(income.id)
-            feedback.value = if (income.type == IncomeType.SALARY) "Sueldo eliminado." else "Extra eliminado."
+            feedback.value = if (income.type == IncomeType.SALARY) strings.salaryDeleted else strings.extraDeleted
         }
     }
 
@@ -676,11 +692,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val amountCents = parsePositiveAmount(amountInput) ?: return false
         val occurredOn = parseExpenseInputDate(occurredOnInput)
         if (occurredOn == null) {
-            feedback.value = "Fecha no válida."
+            feedback.value = strings.invalidDate
             return false
         }
         if (!toInvestments && amountCents > uiState.value.investmentOverview.potValueCents) {
-            feedback.value = "No hay tanto en la cuenta general."
+            feedback.value = strings.notEnoughInPot
             return false
         }
 
@@ -692,7 +708,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     occurredOn = occurredOn,
                 ),
             )
-            feedback.value = if (toInvestments) "Movido a inversiones." else "Devuelto al saldo."
+            feedback.value = if (toInvestments) strings.movedToInvestments else strings.returnedToBalance
         }
         return true
     }
@@ -701,14 +717,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setGeneralPotValue(amountInput: String): Boolean {
         val targetCents = parseAmountToCents(amountInput)
         if (targetCents == null || targetCents < 0L) {
-            feedback.value = "Importe no válido."
+            feedback.value = strings.invalidAmount
             return false
         }
         val overview = uiState.value.investmentOverview
         val potWithoutGain = overview.potValueCents - overview.potGainCents
         viewModelScope.launch {
             repository.setGeneralPotGainCents(targetCents - potWithoutGain)
-            feedback.value = "Valor actualizado."
+            feedback.value = strings.valueUpdated
         }
         return true
     }
@@ -716,16 +732,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun addInvestment(name: String, initialAmountInput: String): Boolean {
         val trimmedName = name.trim()
         if (trimmedName.isBlank()) {
-            feedback.value = "Escribe un nombre."
+            feedback.value = strings.typeName
             return false
         }
         if (uiState.value.investmentOverview.investments.any { it.investment.name.equals(trimmedName, ignoreCase = true) }) {
-            feedback.value = "Esa inversión ya existe."
+            feedback.value = strings.investmentExists
             return false
         }
         val initialCents = if (initialAmountInput.isBlank()) 0L else parsePositiveAmount(initialAmountInput) ?: return false
         if (initialCents > uiState.value.investmentOverview.potValueCents) {
-            feedback.value = "No hay tanto en la cuenta general."
+            feedback.value = strings.notEnoughInPot
             return false
         }
 
@@ -737,7 +753,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     InvestmentAllocation(investmentId = investment.id, amountCents = initialCents, occurredOn = LocalDate.now()),
                 )
             }
-            feedback.value = "Inversión añadida."
+            feedback.value = strings.investmentAdded
         }
         return true
     }
@@ -752,7 +768,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             overview.investments.firstOrNull { it.investment.id == investmentId }?.valueCents ?: 0L
         }
         if (amountCents > available) {
-            feedback.value = if (intoInvestment) "No hay tanto en la cuenta general." else "La inversión no vale tanto."
+            feedback.value = if (intoInvestment) strings.notEnoughInPot else strings.investmentWorthLess
             return false
         }
 
@@ -764,7 +780,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     occurredOn = LocalDate.now(),
                 ),
             )
-            feedback.value = if (intoInvestment) "Dinero invertido." else "Devuelto a la cuenta general."
+            feedback.value = if (intoInvestment) strings.moneyInvested else strings.returnedToPot
         }
         return true
     }
@@ -772,13 +788,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setInvestmentValue(investmentId: String, amountInput: String): Boolean {
         val targetCents = parseAmountToCents(amountInput)
         if (targetCents == null || targetCents < 0L) {
-            feedback.value = "Importe no válido."
+            feedback.value = strings.invalidAmount
             return false
         }
         val summary = uiState.value.investmentOverview.investments.firstOrNull { it.investment.id == investmentId } ?: return false
         viewModelScope.launch {
             repository.setInvestmentGain(investmentId, targetCents - summary.investedCents)
-            feedback.value = "Valor actualizado."
+            feedback.value = strings.valueUpdated
         }
         return true
     }
@@ -786,7 +802,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteInvestment(investmentId: String) {
         viewModelScope.launch {
             repository.deleteInvestment(investmentId)
-            feedback.value = "Inversión eliminada."
+            feedback.value = strings.investmentDeleted
         }
     }
 
@@ -796,14 +812,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 is InvestmentMovement.Transfer -> repository.deleteInvestmentTransfer(movement.id)
                 is InvestmentMovement.Allocation -> repository.deleteInvestmentAllocation(movement.id)
             }
-            feedback.value = "Movimiento eliminado."
+            feedback.value = strings.movementDeleted
         }
     }
 
     private fun parsePositiveAmount(amountInput: String): Long? {
         val amountCents = parseAmountToCents(amountInput)
         if (amountCents == null || amountCents <= 0L) {
-            feedback.value = "Importe no válido."
+            feedback.value = strings.invalidAmount
             return null
         }
         return amountCents
@@ -814,6 +830,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun buildUiState(
+        language: AppLanguage,
         investmentInputs: InvestmentInputs,
         expenses: List<ExpenseEntry>,
         storedCategories: List<String>,
@@ -843,7 +860,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         return SumptusUiState(
             selectedMonth = selectedMonth,
-            monthLabel = formatMonth(selectedMonth),
+            monthLabel = formatMonth(selectedMonth, language.locale),
             monthExpenseTotalCents = monthExpenseTotal,
             monthIncomeTotalCents = monthIncomeTotal,
             monthNetCents = monthIncomeTotal - monthExpenseTotal,
@@ -869,6 +886,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 investmentInputs.potGainCents,
             ),
             isDarkTheme = isDarkTheme,
+            language = language,
             feedbackMessage = feedbackMessage,
         )
     }
@@ -919,7 +937,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .thenByDescending { it.createdAtEpochMillis },
     )
 
-    private fun formatMonth(month: YearMonth): String {
+    private fun formatMonth(month: YearMonth, locale: Locale): String {
         val formatter = DateTimeFormatter.ofPattern("MMMM yyyy", locale)
         return month.atDay(1).format(formatter).replaceFirstChar { char ->
             if (char.isLowerCase()) {

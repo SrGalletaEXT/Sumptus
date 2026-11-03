@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import org.json.JSONArray
+import com.cris.sumptus.i18n.AppLanguage
 import org.json.JSONObject
 
 private val expensesKey = stringPreferencesKey("expenses_json")
@@ -28,6 +29,7 @@ private val migrationCompleteKey = booleanPreferencesKey("room_migration_complet
 private val categoriesKey = stringPreferencesKey("categories_json")
 private val categoryColorsKey = stringPreferencesKey("category_colors_json")
 private val darkThemeKey = booleanPreferencesKey("dark_theme")
+private val languageKey = stringPreferencesKey("language")
 private val extraEntriesKey = stringPreferencesKey("extra_entries_json")
 private val balanceAdjustmentCentsKey = longPreferencesKey("balance_adjustment_cents")
 private val monthlyBalanceAdjustmentsKey = stringPreferencesKey("monthly_balance_adjustments_json")
@@ -151,6 +153,14 @@ class ExpenseRepository(context: Context) {
     val categoryColors: Flow<Map<String, Long>> = preferencesFlow
         .map { preferences -> decodeCategoryColors(preferences[categoryColorsKey]) }
         .distinctUntilChanged()
+
+    val language: Flow<AppLanguage> = preferencesFlow
+        .map { preferences -> AppLanguage.fromTag(preferences[languageKey]) ?: AppLanguage.systemDefault() }
+        .distinctUntilChanged()
+
+    suspend fun setLanguage(language: AppLanguage) {
+        dataStore.edit { preferences -> preferences[languageKey] = language.tag }
+    }
 
     val darkTheme: Flow<Boolean> = preferencesFlow
         .map { preferences -> preferences[darkThemeKey] ?: false }

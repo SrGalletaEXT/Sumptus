@@ -59,6 +59,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -92,6 +93,9 @@ import com.cris.sumptus.data.ExpenseEntry
 import com.cris.sumptus.data.ExtraEntry
 import com.cris.sumptus.data.IncomeType
 import com.cris.sumptus.formatExpenseInputDate
+import com.cris.sumptus.i18n.AppLanguage
+import com.cris.sumptus.i18n.LocalStrings
+import com.cris.sumptus.i18n.Strings
 import com.cris.sumptus.parseExpenseInputDate
 import java.text.NumberFormat
 import java.time.LocalDate
@@ -102,15 +106,15 @@ import java.util.Locale
 import kotlin.math.absoluteValue
 
 private enum class SumptusSection(
-    val label: String,
+    val label: (Strings) -> String,
     val icon: androidx.compose.ui.graphics.vector.ImageVector,
 ) {
-    RESUMEN("Resumen", Icons.Rounded.Home),
-    ANADIR("Añadir", Icons.Rounded.AddCircle),
-    HISTORIAL("Historial", Icons.AutoMirrored.Rounded.ReceiptLong),
-    PRESUPUESTO("Presupuesto", Icons.Rounded.PieChart),
-    INVERSIONES("Inversiones", Icons.AutoMirrored.Rounded.TrendingUp),
-    CATEGORIAS("Categorías", Icons.Rounded.Settings),
+    RESUMEN({ it.tabSummary }, Icons.Rounded.Home),
+    ANADIR({ it.tabAdd }, Icons.Rounded.AddCircle),
+    HISTORIAL({ it.tabHistory }, Icons.AutoMirrored.Rounded.ReceiptLong),
+    PRESUPUESTO({ it.tabBudget }, Icons.Rounded.PieChart),
+    INVERSIONES({ it.tabInvestments }, Icons.AutoMirrored.Rounded.TrendingUp),
+    CATEGORIAS({ it.tabSettings }, Icons.Rounded.Settings),
 }
 
 private enum class EntryMode {
@@ -123,6 +127,9 @@ private sealed interface EditorTarget {
     data class ExpenseTarget(val expense: ExpenseEntry) : EditorTarget
     data class ExtraTarget(val extra: ExtraEntry) : EditorTarget
 }
+
+private val str: Strings
+    @Composable @ReadOnlyComposable get() = LocalStrings.current
 
 private val expenseColor = Color(0xFFB25D66)
 private val incomeColor = Color(0xFF4E8063)
@@ -153,7 +160,7 @@ fun SumptusApp(viewModel: MainViewModel = viewModel()) {
                     NavigationBarItem(
                         selected = currentSection == section,
                         onClick = { currentSection = section },
-                        icon = { Icon(section.icon, contentDescription = section.label) },
+                        icon = { Icon(section.icon, contentDescription = section.label(str)) },
                     )
                 }
             }
@@ -258,6 +265,7 @@ fun SumptusApp(viewModel: MainViewModel = viewModel()) {
                     onDeleteCategory = viewModel::deleteCategory,
                     onSetCategoryColor = viewModel::setCategoryColor,
                     onSetDarkTheme = viewModel::setDarkTheme,
+                    onSetLanguage = viewModel::setLanguage,
                     onExportBackup = viewModel::exportBackup,
                     onImportBackup = viewModel::importBackup,
                 )
@@ -280,12 +288,12 @@ private fun SummaryScreen(
     if (editingBalance) {
         AlertDialog(
             onDismissRequest = { editingBalance = false },
-            title = { Text("Saldo de ${uiState.monthLabel}") },
+            title = { Text(str.balanceOf(uiState.monthLabel)) },
             text = {
                 OutlinedTextField(
                     value = balanceInput,
                     onValueChange = { balanceInput = it },
-                    label = { Text("Importe") },
+                    label = { Text(str.amount) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 )
@@ -298,12 +306,12 @@ private fun SummaryScreen(
                         }
                     },
                 ) {
-                    Text("Guardar")
+                    Text(str.save)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { editingBalance = false }) {
-                    Text("Cancelar")
+                    Text(str.cancel)
                 }
             },
         )
@@ -411,7 +419,7 @@ private fun AddEntryScreen(
             item {
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = onCancelEdit) {
-                        Text("Cancelar")
+                        Text(str.cancel)
                     }
                 }
             }
@@ -430,19 +438,19 @@ private fun AddEntryScreen(
                         FilterChip(
                             selected = mode == EntryMode.GASTO,
                             onClick = { mode = EntryMode.GASTO },
-                            label = { Text("Gasto") },
+                            label = { Text(str.expense) },
                         )
                         FilterChip(
                             selected = mode == EntryMode.SUELDO,
                             onClick = {
                                 mode = EntryMode.SUELDO
                             },
-                            label = { Text("Sueldo") },
+                            label = { Text(str.salary) },
                         )
                         FilterChip(
                             selected = mode == EntryMode.EXTRA,
                             onClick = { mode = EntryMode.EXTRA },
-                            label = { Text("Extra") },
+                            label = { Text(str.extra) },
                         )
                     }
 
@@ -450,7 +458,7 @@ private fun AddEntryScreen(
                         value = amountInput,
                         onValueChange = { amountInput = it },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Importe") },
+                        label = { Text(str.amount) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     )
@@ -461,10 +469,10 @@ private fun AddEntryScreen(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         TextButton(onClick = { dateInput = formatExpenseInputDate(LocalDate.now()) }) {
-                            Text("Hoy")
+                            Text(str.today)
                         }
                         TextButton(onClick = { dateInput = formatExpenseInputDate(LocalDate.now().minusDays(1)) }) {
-                            Text("Ayer")
+                            Text(str.yesterday)
                         }
                         DateWheelButton(
                             date = parseExpenseInputDate(dateInput) ?: LocalDate.now(),
@@ -478,7 +486,7 @@ private fun AddEntryScreen(
                         } else {
                             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Text(
-                                    text = "Categoría",
+                                    text = str.category,
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold,
                                 )
@@ -497,7 +505,7 @@ private fun AddEntryScreen(
                         onValueChange = { notesInput = it },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 3,
-                        label = { Text("Nota") },
+                        label = { Text(str.note) },
                     )
 
                     Button(
@@ -537,12 +545,12 @@ private fun AddEntryScreen(
                     ) {
                         Text(
                             when {
-                                mode == EntryMode.SUELDO && editingExtra != null -> "Guardar sueldo"
-                                mode == EntryMode.SUELDO -> "Añadir sueldo"
-                                mode == EntryMode.EXTRA && editingExtra != null -> "Guardar extra"
-                                mode == EntryMode.EXTRA -> "Añadir extra"
-                                editingExpense != null -> "Guardar gasto"
-                                else -> "Añadir gasto"
+                                mode == EntryMode.SUELDO && editingExtra != null -> str.saveSalary
+                                mode == EntryMode.SUELDO -> str.addSalary
+                                mode == EntryMode.EXTRA && editingExtra != null -> str.saveExtra
+                                mode == EntryMode.EXTRA -> str.addExtra
+                                editingExpense != null -> str.saveExpense
+                                else -> str.addExpense
                             },
                         )
                     }
@@ -589,14 +597,14 @@ private fun HistoryScreen(
         if (uiState.historyEntries.isEmpty()) {
             item {
                 EmptyCard(
-                    title = "Sin movimientos",
+                    title = str.noEntries,
                 )
             }
         } else {
             if (salaries.isNotEmpty()) {
                 item(key = "salary-group") {
                     HistoryGroupHeader(
-                        title = "Sueldo",
+                        title = str.salary,
                         totalCents = salaries.sumOf { it.amountCents },
                         color = incomeColor,
                         amountColor = incomeColor,
@@ -616,7 +624,7 @@ private fun HistoryScreen(
             if (extras.isNotEmpty()) {
                 item(key = "extra-group") {
                     HistoryGroupHeader(
-                        title = "Extras",
+                        title = str.extras,
                         totalCents = extras.sumOf { it.amountCents },
                         color = incomeColor,
                         amountColor = incomeColor,
@@ -685,7 +693,7 @@ private fun BudgetScreen(
     if (editingBudget) {
         AlertDialog(
             onDismissRequest = { editingBudget = false },
-            title = { Text("Límite mensual") },
+            title = { Text(str.monthlyLimit) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     CategoryDropdown(
@@ -698,7 +706,7 @@ private fun BudgetScreen(
                         value = amountInput,
                         onValueChange = { amountInput = it },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Importe") },
+                        label = { Text(str.amount) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     )
@@ -708,12 +716,12 @@ private fun BudgetScreen(
                 TextButton(onClick = {
                     if (onSetCategoryBudget(selectedCategory, amountInput)) editingBudget = false
                 }) {
-                    Text("Guardar")
+                    Text(str.save)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { editingBudget = false }) {
-                    Text("Cancelar")
+                    Text(str.cancel)
                 }
             },
         )
@@ -735,7 +743,7 @@ private fun BudgetScreen(
         }
 
         if (uiState.categories.isEmpty()) {
-            item { EmptyCard(title = "Sin categorías") }
+            item { EmptyCard(title = str.noCategories) }
         } else {
             item {
                 BudgetTotalsCard(
@@ -745,7 +753,7 @@ private fun BudgetScreen(
                 )
             }
             if (uiState.budgetOverview.categories.isEmpty()) {
-                item { EmptyCard(title = "Sin presupuestos") }
+                item { EmptyCard(title = str.noBudgets) }
             } else {
                 items(uiState.budgetOverview.categories, key = { it.category }) { budget ->
                     BudgetRow(
@@ -770,7 +778,7 @@ private fun BudgetScreen(
                             amountInput = ""
                             editingBudget = true
                         }) {
-                            Icon(Icons.Rounded.AddCircle, contentDescription = "Añadir límite")
+                            Icon(Icons.Rounded.AddCircle, contentDescription = str.addLimit)
                         }
                     }
                 }
@@ -802,7 +810,7 @@ private fun BudgetRow(
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(budget.category, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = color)
                 Text(
-                    "Base ${formatCurrency(budget.baseCents)} | Gastado ${formatCurrency(budget.spentCents)}",
+                    str.baseSpent(formatCurrency(budget.baseCents), formatCurrency(budget.spentCents)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                     maxLines = 1,
@@ -839,12 +847,12 @@ private fun BudgetTotalsCard(
     if (editingExtraLimit) {
         AlertDialog(
             onDismissRequest = { editingExtraLimit = false },
-            title = { Text("Límite extra general") },
+            title = { Text(str.generalExtraLimit) },
             text = {
                 OutlinedTextField(
                     value = extraLimitInput,
                     onValueChange = { extraLimitInput = it },
-                    label = { Text("Importe") },
+                    label = { Text(str.amount) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 )
@@ -853,12 +861,12 @@ private fun BudgetTotalsCard(
                 TextButton(onClick = {
                     if (onSetExtraLimit(extraLimitInput)) editingExtraLimit = false
                 }) {
-                    Text("Guardar")
+                    Text(str.save)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { editingExtraLimit = false }) {
-                    Text("Cancelar")
+                    Text(str.cancel)
                 }
             },
         )
@@ -875,9 +883,9 @@ private fun BudgetTotalsCard(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Extra general", style = MaterialTheme.typography.labelLarge)
+                    Text(str.generalExtra, style = MaterialTheme.typography.labelLarge)
                     IconButton(onClick = { editingExtraLimit = true }) {
-                        Icon(Icons.Rounded.AddCircle, contentDescription = "Editar límite extra general")
+                        Icon(Icons.Rounded.AddCircle, contentDescription = str.editGeneralExtraLimit)
                     }
                 }
                 Text(
@@ -888,7 +896,7 @@ private fun BudgetTotalsCard(
                 )
             }
             Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Disponible", style = MaterialTheme.typography.labelLarge)
+                Text(str.available, style = MaterialTheme.typography.labelLarge)
                 Text(
                     formatSignedCurrency(overview.remainingCents),
                     style = MaterialTheme.typography.headlineLarge,
@@ -896,7 +904,7 @@ private fun BudgetTotalsCard(
                     color = remainingColor,
                 )
                 Text(
-                    "Base ${formatCurrency(overview.baseCents)} | Gastado ${formatCurrency(overview.spentCents)}",
+                    str.baseSpent(formatCurrency(overview.baseCents), formatCurrency(overview.spentCents)),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                 )
@@ -920,11 +928,11 @@ private fun CategoryDropdown(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(
-                selectedCategory.ifBlank { "Categoría" },
+                selectedCategory.ifBlank { str.category },
                 modifier = Modifier.weight(1f),
                 color = categoryColor(selectedCategory, categoryColors),
             )
-            Icon(Icons.Rounded.ExpandMore, contentDescription = "Mostrar categorías")
+            Icon(Icons.Rounded.ExpandMore, contentDescription = str.showCategories)
         }
         DropdownMenu(
             expanded = expanded,
@@ -950,6 +958,7 @@ private fun SettingsScreen(
     onDeleteCategory: (String) -> Unit,
     onSetCategoryColor: (String, Long) -> Unit,
     onSetDarkTheme: (Boolean) -> Unit,
+    onSetLanguage: (AppLanguage) -> Unit,
     onExportBackup: (Uri) -> Unit,
     onImportBackup: (Uri) -> Unit,
 ) {
@@ -973,8 +982,8 @@ private fun SettingsScreen(
     pendingImportUri?.let { uri ->
         AlertDialog(
             onDismissRequest = { pendingImportUri = null },
-            title = { Text("Reemplazar datos") },
-            text = { Text("Se sustituirán todos los movimientos y categorías actuales.") },
+            title = { Text(str.replaceData) },
+            text = { Text(str.replaceDataText) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -982,12 +991,12 @@ private fun SettingsScreen(
                         pendingImportUri = null
                     },
                 ) {
-                    Text("Importar")
+                    Text(str.import)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { pendingImportUri = null }) {
-                    Text("Cancelar")
+                    Text(str.cancel)
                 }
             },
         )
@@ -996,19 +1005,19 @@ private fun SettingsScreen(
     pendingCategoryDeletion?.let { category ->
         AlertDialog(
             onDismissRequest = { pendingCategoryDeletion = null },
-            title = { Text("Eliminar $category") },
-            text = { Text("La categoría dejará de estar disponible en los nuevos gastos y presupuestos.") },
+            title = { Text(str.deleteNamed(category)) },
+            text = { Text(str.deleteCategoryText) },
             confirmButton = {
                 TextButton(onClick = {
                     onDeleteCategory(category)
                     pendingCategoryDeletion = null
                 }) {
-                    Text("Eliminar")
+                    Text(str.delete)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { pendingCategoryDeletion = null }) {
-                    Text("Cancelar")
+                    Text(str.cancel)
                 }
             },
         )
@@ -1031,13 +1040,23 @@ private fun SettingsScreen(
                     FilterChip(
                         selected = uiState.isDarkTheme,
                         onClick = { onSetDarkTheme(!uiState.isDarkTheme) },
-                        label = { Text("Modo noche") },
+                        label = { Text(str.darkMode) },
                     )
+                    Text(str.languageLabel, style = MaterialTheme.typography.labelLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AppLanguage.entries.forEach { language ->
+                            FilterChip(
+                                selected = uiState.language == language,
+                                onClick = { onSetLanguage(language) },
+                                label = { Text(language.displayName) },
+                            )
+                        }
+                    }
                     OutlinedTextField(
                         value = newCategoryInput,
                         onValueChange = { newCategoryInput = it },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Nueva categoría") },
+                        label = { Text(str.newCategory) },
                         singleLine = true,
                     )
                     Button(
@@ -1048,7 +1067,7 @@ private fun SettingsScreen(
                         },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("Añadir categoría")
+                        Text(str.addCategory)
                     }
                     if (uiState.categories.isNotEmpty()) {
                         CategoryDropdown(
@@ -1077,7 +1096,7 @@ private fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Icon(Icons.Rounded.DeleteOutline, contentDescription = null)
-                            Text("Eliminar categoría")
+                            Text(str.deleteCategory)
                         }
                     }
                 }
@@ -1093,13 +1112,13 @@ private fun SettingsScreen(
                     onClick = { exportLauncher.launch("sumptus-backup.json") },
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text("Exportar")
+                    Text(str.export)
                 }
                 OutlinedButton(
                     onClick = { importLauncher.launch(arrayOf("application/json")) },
                     modifier = Modifier.weight(1f),
                 ) {
-                    Text("Importar")
+                    Text(str.import)
                 }
             }
         }
@@ -1128,7 +1147,7 @@ private fun MonthSelectorCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onPreviousMonth) {
-                    Icon(Icons.Rounded.ChevronLeft, contentDescription = "Mes anterior")
+                    Icon(Icons.Rounded.ChevronLeft, contentDescription = str.previousMonth)
                 }
                 Text(
                     text = monthLabel,
@@ -1136,7 +1155,7 @@ private fun MonthSelectorCard(
                     fontWeight = FontWeight.Bold,
                 )
                 IconButton(onClick = onNextMonth) {
-                    Icon(Icons.Rounded.ChevronRight, contentDescription = "Mes siguiente")
+                    Icon(Icons.Rounded.ChevronRight, contentDescription = str.nextMonth)
                 }
             }
 
@@ -1173,8 +1192,8 @@ private fun SummaryTotalsCard(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Saldo", style = MaterialTheme.typography.labelLarge)
-                Text("Editar", style = MaterialTheme.typography.labelLarge)
+                Text(str.balance, style = MaterialTheme.typography.labelLarge)
+                Text(str.edit, style = MaterialTheme.typography.labelLarge)
             }
             Text(
                 text = formatCurrency(balanceCents),
@@ -1182,11 +1201,11 @@ private fun SummaryTotalsCard(
                 fontWeight = FontWeight.Bold,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                SummaryMetric("Gastos", formatCurrency(expenseCents), expenseColor, Modifier.weight(1f))
-                SummaryMetric("Ingresos", formatCurrency(incomeCents), incomeColor, Modifier.weight(1f))
+                SummaryMetric(str.expenses, formatCurrency(expenseCents), expenseColor, Modifier.weight(1f))
+                SummaryMetric(str.income, formatCurrency(incomeCents), incomeColor, Modifier.weight(1f))
             }
             SummaryMetric(
-                label = "Neto",
+                label = str.net,
                 value = formatSignedCurrency(netCents),
                 color = if (netCents >= 0L) incomeColor else expenseColor,
                 modifier = Modifier.fillMaxWidth(),
@@ -1223,7 +1242,7 @@ private fun ThreeMonthExpenseCard(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Gasto por mes", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(str.spendingByMonth, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             comparisons.asReversed().forEach { comparison ->
                 val key = comparison.month.toString()
                 val expanded = key in expandedMonths
@@ -1245,13 +1264,13 @@ private fun ThreeMonthExpenseCard(
                     )
                     Icon(
                         imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                        contentDescription = if (expanded) "Ocultar categorías" else "Mostrar categorías",
+                        contentDescription = if (expanded) str.hideCategories else str.showCategories,
                         tint = expenseColor,
                     )
                 }
                 if (expanded) {
                     if (comparison.categories.isEmpty()) {
-                        Text("Sin gastos", style = MaterialTheme.typography.bodyMedium)
+                        Text(str.noExpenses, style = MaterialTheme.typography.bodyMedium)
                     } else {
                         comparison.categories.forEach { category ->
                             ExpenseCategoryRow(category, categoryColors)
@@ -1308,9 +1327,9 @@ private fun RecentExpensesCard(
             modifier = Modifier.padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Últimos gastos", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(str.latestExpenses, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             if (visibleExpenses.isEmpty()) {
-                Text("Sin gastos", style = MaterialTheme.typography.bodyMedium)
+                Text(str.noExpenses, style = MaterialTheme.typography.bodyMedium)
             } else {
                 visibleExpenses.forEach { expense ->
                     RecentExpenseRow(expense, categoryColors)
@@ -1321,7 +1340,7 @@ private fun RecentExpensesCard(
                     IconButton(onClick = { expanded = !expanded }) {
                         Icon(
                             imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                            contentDescription = if (expanded) "Mostrar menos gastos" else "Mostrar más gastos",
+                            contentDescription = if (expanded) str.showFewerExpenses else str.showMoreExpenses,
                             tint = expenseColor,
                         )
                     }
@@ -1359,7 +1378,7 @@ private fun RecentExpenseRow(
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(expense.category, style = MaterialTheme.typography.bodySmall, color = color)
                 Text(
-                    expense.occurredOn.format(DateTimeFormatter.ofPattern("d MMM", Locale.forLanguageTag("es-ES"))),
+                    expense.occurredOn.format(DateTimeFormatter.ofPattern("d MMM", str.locale)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                 )
@@ -1460,16 +1479,16 @@ private fun HistoryRow(
                     color = amountColor,
                 )
                 Text(
-                    text = entry.occurredOn.format(DateTimeFormatter.ofPattern("d MMM", Locale.forLanguageTag("es-ES"))),
+                    text = entry.occurredOn.format(DateTimeFormatter.ofPattern("d MMM", str.locale)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                 )
                 Row {
                     IconButton(onClick = onEdit) {
-                        Icon(Icons.Rounded.Edit, contentDescription = "Editar")
+                        Icon(Icons.Rounded.Edit, contentDescription = str.edit)
                     }
                     IconButton(onClick = onDelete) {
-                        Icon(Icons.Rounded.DeleteOutline, contentDescription = "Eliminar")
+                        Icon(Icons.Rounded.DeleteOutline, contentDescription = str.delete)
                     }
                 }
             }
@@ -1519,7 +1538,7 @@ private fun HistoryGroupHeader(
             )
             Icon(
                 imageVector = if (expanded) Icons.Rounded.ExpandMore else Icons.Rounded.ChevronRight,
-                contentDescription = if (expanded) "Ocultar $title" else "Mostrar $title",
+                contentDescription = if (expanded) str.hide(title) else str.show(title),
             )
         }
     }
@@ -1557,12 +1576,12 @@ private fun EmptyCategoryState(onOpenCategories: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(
-                text = "No hay categorías.",
+                text = str.noCategoriesYet,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
             OutlinedButton(onClick = onOpenCategories) {
-                Text("Crear categorías")
+                Text(str.createCategories)
             }
         }
     }
@@ -1588,7 +1607,7 @@ private fun DateWheelButton(
             }.show()
         },
     ) {
-        Text(date.format(DateTimeFormatter.ofPattern("d MMM", Locale.forLanguageTag("es-ES"))))
+        Text(date.format(DateTimeFormatter.ofPattern("d MMM", str.locale)))
     }
 }
 
@@ -1615,17 +1634,20 @@ private fun historyAccent(entry: TimelineEntry, categoryColors: Map<String, Long
     is TimelineEntry.ExtraItem -> incomeColor
 }
 
+@Composable
 private fun historyTitle(entry: TimelineEntry): String = when (entry) {
-    is TimelineEntry.ExpenseItem -> entry.expense.notes.ifBlank { "Gasto" }
+    is TimelineEntry.ExpenseItem -> entry.expense.notes.ifBlank { str.expense }
     is TimelineEntry.ExtraItem -> entry.extra.notes.ifBlank { incomeLabel(entry.extra.type) }
 }
 
+@Composable
 private fun historySubtitle(entry: TimelineEntry): String = when (entry) {
     is TimelineEntry.ExpenseItem -> entry.expense.category
     is TimelineEntry.ExtraItem -> incomeLabel(entry.extra.type)
 }
 
-private fun incomeLabel(type: IncomeType): String = if (type == IncomeType.SALARY) "Sueldo" else "Extra"
+@Composable
+private fun incomeLabel(type: IncomeType): String = if (type == IncomeType.SALARY) str.salary else str.extra
 
 private fun formatCurrency(amountCents: Long): String {
     val formatter = NumberFormat.getCurrencyInstance(Locale.forLanguageTag("es-ES")).apply {
@@ -1645,8 +1667,9 @@ private fun formatAmountInput(amountCents: Long): String = String.format(
     amountCents / 100.0,
 )
 
+@Composable
 private fun formatShortMonth(month: YearMonth): String {
-    val locale = Locale.forLanguageTag("es-ES")
+    val locale = str.locale
     val formatter = DateTimeFormatter.ofPattern("MMM yy", locale)
     return month.atDay(1).format(formatter).replaceFirstChar { char ->
         if (char.isLowerCase()) {
@@ -1712,8 +1735,8 @@ private fun InvestmentsScreen(
             },
         )
         InvestmentDialog.PotValue -> AmountDialog(
-            title = "Valor de la cuenta general",
-            supportingText = "Pon lo que tienes ahora, intereses incluidos.",
+            title = str.potValueTitle,
+            supportingText = str.potValueHint,
             initialValue = formatAmountInput(overview.potValueCents),
             onDismiss = close,
             onSave = { if (onSetPotValue(it)) close() },
@@ -1733,30 +1756,30 @@ private fun InvestmentsScreen(
                     title = { Text(summary.investment.name) },
                     text = {
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            InvestmentAction("Invertir más") {
+                            InvestmentAction(str.investMore) {
                                 dialog = InvestmentDialog.Allocate(current.investmentId, intoInvestment = true)
                             }
-                            InvestmentAction("Retirar a la cuenta general") {
+                            InvestmentAction(str.withdrawToPot) {
                                 dialog = InvestmentDialog.Allocate(current.investmentId, intoInvestment = false)
                             }
-                            InvestmentAction("Actualizar valor") { dialog = InvestmentDialog.Value(current.investmentId) }
-                            InvestmentAction("Eliminar", color = expenseColor) {
+                            InvestmentAction(str.updateValue) { dialog = InvestmentDialog.Value(current.investmentId) }
+                            InvestmentAction(str.delete, color = expenseColor) {
                                 dialog = InvestmentDialog.ConfirmDelete(current.investmentId)
                             }
                         }
                     },
-                    confirmButton = { TextButton(onClick = close) { Text("Cerrar") } },
+                    confirmButton = { TextButton(onClick = close) { Text(str.close) } },
                 )
             }
         }
         is InvestmentDialog.Allocate -> {
             val summary = summaryOf(current.investmentId)
             AmountDialog(
-                title = if (current.intoInvestment) "Invertir en ${summary?.investment?.name.orEmpty()}" else "Retirar de ${summary?.investment?.name.orEmpty()}",
+                title = if (current.intoInvestment) str.investIn(summary?.investment?.name.orEmpty()) else str.withdrawFrom(summary?.investment?.name.orEmpty()),
                 supportingText = if (current.intoInvestment) {
-                    "Disponible en la cuenta general: ${formatCurrency(overview.potValueCents)}"
+                    str.availableInPot(formatCurrency(overview.potValueCents))
                 } else {
-                    "Vuelve a la cuenta general. Valor actual: ${formatCurrency(summary?.valueCents ?: 0L)}"
+                    str.backToPotWithValue(formatCurrency(summary?.valueCents ?: 0L))
                 },
                 initialValue = "",
                 onDismiss = close,
@@ -1766,8 +1789,8 @@ private fun InvestmentsScreen(
         is InvestmentDialog.Value -> {
             val summary = summaryOf(current.investmentId)
             AmountDialog(
-                title = "Valor de ${summary?.investment?.name.orEmpty()}",
-                supportingText = "Invertido: ${formatCurrency(summary?.investedCents ?: 0L)}",
+                title = str.valueOf(summary?.investment?.name.orEmpty()),
+                supportingText = str.investedColon(formatCurrency(summary?.investedCents ?: 0L)),
                 initialValue = formatAmountInput(summary?.valueCents ?: 0L),
                 onDismiss = close,
                 onSave = { if (onSetInvestmentValue(current.investmentId, it)) close() },
@@ -1777,30 +1800,30 @@ private fun InvestmentsScreen(
             val summary = summaryOf(current.investmentId)
             AlertDialog(
                 onDismissRequest = close,
-                title = { Text("¿Eliminar ${summary?.investment?.name.orEmpty()}?") },
+                title = { Text(str.deleteQuestion(summary?.investment?.name.orEmpty())) },
                 text = {
-                    Text("Su valor actual (${formatCurrency(summary?.valueCents ?: 0L)}) vuelve a la cuenta general y se borran sus movimientos.")
+                    Text(str.deleteInvestmentText(formatCurrency(summary?.valueCents ?: 0L)))
                 },
                 confirmButton = {
                     TextButton(onClick = {
                         onDeleteInvestment(current.investmentId)
                         close()
-                    }) { Text("Eliminar", color = expenseColor) }
+                    }) { Text(str.delete, color = expenseColor) }
                 },
-                dismissButton = { TextButton(onClick = close) { Text("Cancelar") } },
+                dismissButton = { TextButton(onClick = close) { Text(str.cancel) } },
             )
         }
         is InvestmentDialog.ConfirmDeleteMovement -> AlertDialog(
             onDismissRequest = close,
-            title = { Text("¿Eliminar movimiento?") },
+            title = { Text(str.deleteMovementQuestion) },
             text = { Text("${movementTitle(current.movement)}: ${formatCurrency(current.movement.amountCents.absoluteValue)}") },
             confirmButton = {
                 TextButton(onClick = {
                     onDeleteMovement(current.movement)
                     close()
-                }) { Text("Eliminar", color = expenseColor) }
+                }) { Text(str.delete, color = expenseColor) }
             },
-            dismissButton = { TextButton(onClick = close) { Text("Cancelar") } },
+            dismissButton = { TextButton(onClick = close) { Text(str.cancel) } },
         )
     }
 
@@ -1815,7 +1838,7 @@ private fun InvestmentsScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             ) {
                 Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Text("Inversiones", style = MaterialTheme.typography.labelLarge)
+                    Text(str.investments, style = MaterialTheme.typography.labelLarge)
                     Text(
                         formatCurrency(overview.totalValueCents),
                         style = MaterialTheme.typography.headlineLarge,
@@ -1823,13 +1846,13 @@ private fun InvestmentsScreen(
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         SummaryMetric(
-                            "Aportado",
+                            str.contributed,
                             formatCurrency(overview.contributedCents),
                             MaterialTheme.colorScheme.onSurface,
                             Modifier.weight(1f),
                         )
                         SummaryMetric(
-                            "Rentabilidad",
+                            str.returnLabel,
                             formatSignedCurrency(overview.totalGainCents),
                             if (overview.totalGainCents >= 0L) incomeColor else expenseColor,
                             Modifier.weight(1f),
@@ -1837,10 +1860,10 @@ private fun InvestmentsScreen(
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Button(onClick = { dialog = InvestmentDialog.Transfer(toInvestments = true) }, modifier = Modifier.weight(1f)) {
-                            Text("Mover desde saldo")
+                            Text(str.moveFromBalance)
                         }
                         OutlinedButton(onClick = { dialog = InvestmentDialog.Transfer(toInvestments = false) }, modifier = Modifier.weight(1f)) {
-                            Text("Volver al saldo")
+                            Text(str.backToBalance)
                         }
                     }
                 }
@@ -1861,9 +1884,9 @@ private fun InvestmentsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Cuenta general", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(str.generalAccount, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Text(
-                            "Intereses ${formatSignedCurrency(overview.potGainCents)} | Toca para actualizar",
+                            str.interestTapToUpdate(formatSignedCurrency(overview.potGainCents)),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                             maxLines = 1,
@@ -1887,7 +1910,7 @@ private fun InvestmentsScreen(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                 TextButton(onClick = { dialog = InvestmentDialog.NewInvestment }) {
                     Icon(Icons.Rounded.AddCircle, contentDescription = null)
-                    Text("  Nueva inversión")
+                    Text("  " + str.newInvestment)
                 }
             }
         }
@@ -1900,7 +1923,7 @@ private fun InvestmentsScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 ) {
                     Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("Movimientos", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(str.movements, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                         visibleMovements.forEach { movement ->
                             InvestmentMovementRow(
                                 movement = movement,
@@ -1912,7 +1935,7 @@ private fun InvestmentsScreen(
                                 IconButton(onClick = { showAllMovements = !showAllMovements }) {
                                     Icon(
                                         imageVector = if (showAllMovements) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                                        contentDescription = if (showAllMovements) "Mostrar menos" else "Mostrar más",
+                                        contentDescription = if (showAllMovements) str.showLess else str.showMore,
                                     )
                                 }
                             }
@@ -1962,7 +1985,7 @@ private fun InvestmentRow(summary: InvestmentSummary, onClick: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "Invertido ${formatCurrency(summary.investedCents)}",
+                    str.invested(formatCurrency(summary.investedCents)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
                 )
@@ -1990,7 +2013,7 @@ private fun InvestmentMovementRow(movement: InvestmentMovement, onDelete: () -> 
             Text(movementTitle(movement), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
                 listOf(
-                    movement.occurredOn.format(DateTimeFormatter.ofPattern("d MMM yyyy", Locale.forLanguageTag("es-ES"))),
+                    movement.occurredOn.format(DateTimeFormatter.ofPattern("d MMM yyyy", str.locale)),
                     movement.notes,
                 ).filter { it.isNotBlank() }.joinToString(" | "),
                 style = MaterialTheme.typography.bodySmall,
@@ -2001,16 +2024,17 @@ private fun InvestmentMovementRow(movement: InvestmentMovement, onDelete: () -> 
         }
         Text(formatCurrency(movement.amountCents.absoluteValue), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
         IconButton(onClick = onDelete) {
-            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Eliminar movimiento")
+            Icon(Icons.Rounded.DeleteOutline, contentDescription = str.deleteMovement)
         }
     }
 }
 
+@Composable
 private fun movementTitle(movement: InvestmentMovement): String = when (movement) {
-    is InvestmentMovement.Transfer -> if (movement.amountCents >= 0L) "Saldo → Cuenta general" else "Cuenta general → Saldo"
+    is InvestmentMovement.Transfer -> if (movement.amountCents >= 0L) str.balanceToPot else str.potToBalance
     is InvestmentMovement.Allocation -> {
-        val name = movement.investmentName.ifBlank { "Inversión" }
-        if (movement.amountCents >= 0L) "Cuenta general → $name" else "$name → Cuenta general"
+        val name = movement.investmentName.ifBlank { str.investmentFallback }
+        if (movement.amountCents >= 0L) str.potTo(name) else str.toPot(name)
     }
 }
 
@@ -2032,14 +2056,14 @@ private fun AmountDialog(
                 OutlinedTextField(
                     value = input,
                     onValueChange = { input = it },
-                    label = { Text("Importe") },
+                    label = { Text(str.amount) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 )
             }
         },
-        confirmButton = { TextButton(onClick = { onSave(input) }) { Text("Guardar") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+        confirmButton = { TextButton(onClick = { onSave(input) }) { Text(str.save) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(str.cancel) } },
     )
 }
 
@@ -2055,25 +2079,25 @@ private fun TransferDialog(
     var dateInput by rememberSaveable { mutableStateOf(formatExpenseInputDate(LocalDate.now())) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (toInvestments) "Mover a inversiones" else "Volver al saldo") },
+        title = { Text(if (toInvestments) str.moveToInvestments else str.backToBalance) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    availableCents?.let { "Disponible en la cuenta general: ${formatCurrency(it)}" }
-                        ?: "Se resta del saldo y va a la cuenta general. No cuenta como gasto.",
+                    availableCents?.let { str.availableInPot(formatCurrency(it)) }
+                        ?: str.transferHint,
                     style = MaterialTheme.typography.bodySmall,
                 )
                 OutlinedTextField(
                     value = amountInput,
                     onValueChange = { amountInput = it },
-                    label = { Text("Importe") },
+                    label = { Text(str.amount) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 )
                 OutlinedTextField(
                     value = notesInput,
                     onValueChange = { notesInput = it },
-                    label = { Text("Nota") },
+                    label = { Text(str.note) },
                     singleLine = true,
                 )
                 DateWheelButton(
@@ -2082,8 +2106,8 @@ private fun TransferDialog(
                 )
             }
         },
-        confirmButton = { TextButton(onClick = { onSave(amountInput, notesInput, dateInput) }) { Text("Guardar") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+        confirmButton = { TextButton(onClick = { onSave(amountInput, notesInput, dateInput) }) { Text(str.save) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(str.cancel) } },
     )
 }
 
@@ -2097,26 +2121,26 @@ private fun NewInvestmentDialog(
     var amountInput by rememberSaveable { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Nueva inversión") },
+        title = { Text(str.newInvestment) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = nameInput,
                     onValueChange = { nameInput = it },
-                    label = { Text("Nombre (ETF, acción...)") },
+                    label = { Text(str.investmentNameLabel) },
                     singleLine = true,
                 )
-                Text("Disponible en la cuenta general: ${formatCurrency(availableCents)}", style = MaterialTheme.typography.bodySmall)
+                Text(str.availableInPot(formatCurrency(availableCents)), style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(
                     value = amountInput,
                     onValueChange = { amountInput = it },
-                    label = { Text("Importe inicial (opcional)") },
+                    label = { Text(str.initialAmountOptional) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 )
             }
         },
-        confirmButton = { TextButton(onClick = { onSave(nameInput, amountInput) }) { Text("Guardar") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+        confirmButton = { TextButton(onClick = { onSave(nameInput, amountInput) }) { Text(str.save) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(str.cancel) } },
     )
 }
