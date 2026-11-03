@@ -39,6 +39,7 @@ private val defaultCategoriesRemovedKey = booleanPreferencesKey("default_categor
 private val investmentTransfersKey = stringPreferencesKey("investment_transfers_json")
 private val investmentsKey = stringPreferencesKey("investments_json")
 private val investmentAllocationsKey = stringPreferencesKey("investment_allocations_json")
+private val balanceAdjustmentsCarryoverMigratedKey = booleanPreferencesKey("balance_adjustments_carryover_migrated")
 private val generalPotGainCentsKey = longPreferencesKey("general_pot_gain_cents")
 private val retiredDefaultCategories = setOf(
     "Hogar",
@@ -49,10 +50,14 @@ private val retiredDefaultCategories = setOf(
     "Suscripciones",
     "Otros",
 )
-private const val backupVersion = 2
+private const val backupVersion = 3
+
+/** Backups up to this version store monthly balance adjustments where every month started at 0. */
+private const val lastIndependentMonthBackupVersion = 2
 private const val minSupportedBackupVersion = 1
 
 private data class BackupData(
+    val version: Int,
     val expenses: List<ExpenseEntry>,
     val incomes: List<ExtraEntry>,
     val categories: List<String>,
@@ -67,6 +72,44 @@ private data class BackupData(
     val investmentAllocations: List<InvestmentAllocation>,
     val generalPotGainCents: Long,
 )
+
+/**
+ * Converts monthly balance adjustments from the old model, where every month started at 0 (so an
+ * adjustment held the whole opening balance), to the carry-over model, where a month starts with
+ * the previous month's ending balance (so an adjustment is only the difference from it).
+ *
+ * Months that had an adjustment keep exactly the ending balance they showed before; months
+ * without one now start from the previous month's balance instead of 0.
+ */
+internal fun convertIndependentMonthAdjustmentsToCarryover(
+    adjustments: Map<String, Long>,
+    expenses: List<ExpenseEntry>,
+    incomes: List<ExtraEntry>,
+): Map<String, Long> {
+    if (adjustments.isEmpty()) return adjustments
+
+    val netByMonth = mutableMapOf<YearMonth, Long>()
+    expenses.forEach { netByMonth.merge(YearMonth.from(it.occurredOn), -it.amountCents, Long::plus) }
+    incomes.forEach { netByMonth.merge(YearMonth.from(it.occurredOn), it.amountCents, Long::plus) }
+    val adjustmentMonths = adjustments.keys.map(YearMonth::parse)
+    val lastMonth = adjustmentMonths.max()
+    var month = (adjustmentMonths + netByMonth.keys).min()
+
+    val converted = mutableMapOf<String, Long>()
+    var previousEnding = 0L
+    while (month <= lastMonth) {
+        val net = netByMonth[month] ?: 0L
+        val oldAdjustment = adjustments[month.toString()]
+        previousEnding = if (oldAdjustment != null) {
+            converted[month.toString()] = oldAdjustment - previousEnding
+            oldAdjustment + net
+        } else {
+            previousEnding + net
+        }
+        month = month.plusMonths(1)
+    }
+    return converted
+}
 
 internal fun categoryColorKey(categoryName: String): String =
     normalizeCategoryName(categoryName).lowercase(Locale.ROOT)
@@ -95,6 +138,7 @@ class ExpenseRepository(context: Context) {
             removeDefaultCategoriesOnce()
             migrateBalanceAdjustmentsToMonths()
             migrateGeneralExtraLimitToMonths()
+            migrateBalanceAdjustmentsToCarryover()
         }
     }
 
@@ -349,12 +393,17 @@ class ExpenseRepository(context: Context) {
                 preferences[categoryColorsKey] = encodeCategoryColors(backup.categoryColors)
             }
             preferences[extraEntriesKey] = encodeExtraEntries(backup.incomes)
-            val adjustments = backup.monthlyBalanceAdjustments.ifEmpty {
+            val storedAdjustments = backup.monthlyBalanceAdjustments.ifEmpty {
                 legacyMonthlyBalanceAdjustments(
                     backup.legacyBalanceAdjustmentCents ?: 0L,
                     backup.expenses,
                     backup.incomes,
                 )
+            }
+            val adjustments = if (backup.version <= lastIndependentMonthBackupVersion) {
+                convertIndependentMonthAdjustmentsToCarryover(storedAdjustments, backup.expenses, backup.incomes)
+            } else {
+                storedAdjustments
             }
             if (adjustments.isEmpty()) {
                 preferences.remove(monthlyBalanceAdjustmentsKey)
@@ -380,6 +429,7 @@ class ExpenseRepository(context: Context) {
             preferences[generalPotGainCentsKey] = backup.generalPotGainCents
             preferences.remove(balanceAdjustmentCentsKey)
             preferences[monthlyBalancesMigratedKey] = true
+            preferences[balanceAdjustmentsCarryoverMigratedKey] = true
             preferences[defaultCategoriesRemovedKey] = true
         }
         return true
@@ -456,6 +506,26 @@ class ExpenseRepository(context: Context) {
             }
             mutablePreferences.remove(balanceAdjustmentCentsKey)
             mutablePreferences[monthlyBalancesMigratedKey] = true
+        }
+    }
+
+    private suspend fun migrateBalanceAdjustmentsToCarryover() {
+        val preferences = preferencesFlow.first()
+        if (preferences[balanceAdjustmentsCarryoverMigratedKey] == true) return
+
+        val adjustments = decodeMonthlyBalanceAdjustments(preferences[monthlyBalanceAdjustmentsKey])
+        val converted = convertIndependentMonthAdjustmentsToCarryover(
+            adjustments,
+            expenseDao.getExpenses(),
+            decodeExtraEntries(preferences[extraEntriesKey]),
+        )
+        dataStore.edit { mutablePreferences ->
+            if (converted.isEmpty()) {
+                mutablePreferences.remove(monthlyBalanceAdjustmentsKey)
+            } else {
+                mutablePreferences[monthlyBalanceAdjustmentsKey] = encodeMonthlyBalanceAdjustments(converted)
+            }
+            mutablePreferences[balanceAdjustmentsCarryoverMigratedKey] = true
         }
     }
 
@@ -653,7 +723,8 @@ class ExpenseRepository(context: Context) {
 
     private fun decodeBackup(rawBackup: String): BackupData? = runCatching {
         val root = JSONObject(rawBackup)
-        check(root.getInt("version") in minSupportedBackupVersion..backupVersion)
+        val version = root.getInt("version")
+        check(version in minSupportedBackupVersion..backupVersion)
 
         val expenseItems = root.getJSONArray("expenses")
         val expenses = decodeExpenses(expenseItems.toString())
@@ -664,6 +735,7 @@ class ExpenseRepository(context: Context) {
         check(incomes.size == incomeItems.length())
 
         BackupData(
+            version = version,
             expenses = expenses,
             incomes = incomes,
             categories = decodeCategories(root.getJSONArray("categories").toString()),
