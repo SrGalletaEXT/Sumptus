@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ReceiptLong
+import androidx.compose.material.icons.automirrored.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.AddCircle
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -78,6 +79,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.cris.sumptus.CategorySpendSummary
 import com.cris.sumptus.CategoryBudgetSummary
+import com.cris.sumptus.InvestmentMovement
+import com.cris.sumptus.InvestmentOverview
+import com.cris.sumptus.InvestmentSummary
 import com.cris.sumptus.BudgetOverview
 import com.cris.sumptus.MainViewModel
 import com.cris.sumptus.MonthExpenseComparison
@@ -105,6 +109,7 @@ private enum class SumptusSection(
     ANADIR("Añadir", Icons.Rounded.AddCircle),
     HISTORIAL("Historial", Icons.AutoMirrored.Rounded.ReceiptLong),
     PRESUPUESTO("Presupuesto", Icons.Rounded.PieChart),
+    INVERSIONES("Inversiones", Icons.AutoMirrored.Rounded.TrendingUp),
     CATEGORIAS("Categorías", Icons.Rounded.Settings),
 }
 
@@ -234,6 +239,17 @@ fun SumptusApp(viewModel: MainViewModel = viewModel()) {
                     onNextMonth = viewModel::showNextMonth,
                     onSetCategoryBudget = viewModel::setCategoryBudget,
                     onSetGeneralExtraLimit = viewModel::setGeneralExtraLimit,
+                )
+
+                SumptusSection.INVERSIONES -> InvestmentsScreen(
+                    overview = uiState.investmentOverview,
+                    onSaveTransfer = viewModel::saveInvestmentTransfer,
+                    onSetPotValue = viewModel::setGeneralPotValue,
+                    onAddInvestment = viewModel::addInvestment,
+                    onSaveAllocation = viewModel::saveInvestmentAllocation,
+                    onSetInvestmentValue = viewModel::setInvestmentValue,
+                    onDeleteInvestment = viewModel::deleteInvestment,
+                    onDeleteMovement = viewModel::deleteInvestmentMovement,
                 )
 
                 SumptusSection.CATEGORIAS -> SettingsScreen(
@@ -1656,4 +1672,451 @@ private fun categoryColor(category: String, categoryColors: Map<String, Long>): 
     val colorArgb = categoryColors[category.lowercase(Locale.ROOT)]
         ?: categoryColorPalette[category.lowercase(Locale.ROOT).hashCode().absoluteValue % categoryColorPalette.size]
     return Color(colorArgb.toInt())
+}
+
+private sealed interface InvestmentDialog {
+    data class Transfer(val toInvestments: Boolean) : InvestmentDialog
+    data object PotValue : InvestmentDialog
+    data object NewInvestment : InvestmentDialog
+    data class Actions(val investmentId: String) : InvestmentDialog
+    data class Allocate(val investmentId: String, val intoInvestment: Boolean) : InvestmentDialog
+    data class Value(val investmentId: String) : InvestmentDialog
+    data class ConfirmDelete(val investmentId: String) : InvestmentDialog
+    data class ConfirmDeleteMovement(val movement: InvestmentMovement) : InvestmentDialog
+}
+
+@Composable
+private fun InvestmentsScreen(
+    overview: InvestmentOverview,
+    onSaveTransfer: (amount: String, notes: String, date: String, toInvestments: Boolean) -> Boolean,
+    onSetPotValue: (String) -> Boolean,
+    onAddInvestment: (name: String, initialAmount: String) -> Boolean,
+    onSaveAllocation: (investmentId: String, amount: String, intoInvestment: Boolean) -> Boolean,
+    onSetInvestmentValue: (investmentId: String, amount: String) -> Boolean,
+    onDeleteInvestment: (String) -> Unit,
+    onDeleteMovement: (InvestmentMovement) -> Unit,
+) {
+    var dialog by remember { mutableStateOf<InvestmentDialog?>(null) }
+    var showAllMovements by rememberSaveable { mutableStateOf(false) }
+    val close = { dialog = null }
+    fun summaryOf(id: String): InvestmentSummary? = overview.investments.firstOrNull { it.investment.id == id }
+
+    when (val current = dialog) {
+        null -> Unit
+        is InvestmentDialog.Transfer -> TransferDialog(
+            toInvestments = current.toInvestments,
+            availableCents = if (current.toInvestments) null else overview.potValueCents,
+            onDismiss = close,
+            onSave = { amount, notes, date ->
+                if (onSaveTransfer(amount, notes, date, current.toInvestments)) close()
+            },
+        )
+        InvestmentDialog.PotValue -> AmountDialog(
+            title = "Valor de la cuenta general",
+            supportingText = "Pon lo que tienes ahora, intereses incluidos.",
+            initialValue = formatAmountInput(overview.potValueCents),
+            onDismiss = close,
+            onSave = { if (onSetPotValue(it)) close() },
+        )
+        InvestmentDialog.NewInvestment -> NewInvestmentDialog(
+            availableCents = overview.potValueCents,
+            onDismiss = close,
+            onSave = { name, amount -> if (onAddInvestment(name, amount)) close() },
+        )
+        is InvestmentDialog.Actions -> {
+            val summary = summaryOf(current.investmentId)
+            if (summary == null) {
+                close()
+            } else {
+                AlertDialog(
+                    onDismissRequest = close,
+                    title = { Text(summary.investment.name) },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            InvestmentAction("Invertir más") {
+                                dialog = InvestmentDialog.Allocate(current.investmentId, intoInvestment = true)
+                            }
+                            InvestmentAction("Retirar a la cuenta general") {
+                                dialog = InvestmentDialog.Allocate(current.investmentId, intoInvestment = false)
+                            }
+                            InvestmentAction("Actualizar valor") { dialog = InvestmentDialog.Value(current.investmentId) }
+                            InvestmentAction("Eliminar", color = expenseColor) {
+                                dialog = InvestmentDialog.ConfirmDelete(current.investmentId)
+                            }
+                        }
+                    },
+                    confirmButton = { TextButton(onClick = close) { Text("Cerrar") } },
+                )
+            }
+        }
+        is InvestmentDialog.Allocate -> {
+            val summary = summaryOf(current.investmentId)
+            AmountDialog(
+                title = if (current.intoInvestment) "Invertir en ${summary?.investment?.name.orEmpty()}" else "Retirar de ${summary?.investment?.name.orEmpty()}",
+                supportingText = if (current.intoInvestment) {
+                    "Disponible en la cuenta general: ${formatCurrency(overview.potValueCents)}"
+                } else {
+                    "Vuelve a la cuenta general. Valor actual: ${formatCurrency(summary?.valueCents ?: 0L)}"
+                },
+                initialValue = "",
+                onDismiss = close,
+                onSave = { if (onSaveAllocation(current.investmentId, it, current.intoInvestment)) close() },
+            )
+        }
+        is InvestmentDialog.Value -> {
+            val summary = summaryOf(current.investmentId)
+            AmountDialog(
+                title = "Valor de ${summary?.investment?.name.orEmpty()}",
+                supportingText = "Invertido: ${formatCurrency(summary?.investedCents ?: 0L)}",
+                initialValue = formatAmountInput(summary?.valueCents ?: 0L),
+                onDismiss = close,
+                onSave = { if (onSetInvestmentValue(current.investmentId, it)) close() },
+            )
+        }
+        is InvestmentDialog.ConfirmDelete -> {
+            val summary = summaryOf(current.investmentId)
+            AlertDialog(
+                onDismissRequest = close,
+                title = { Text("¿Eliminar ${summary?.investment?.name.orEmpty()}?") },
+                text = {
+                    Text("Su valor actual (${formatCurrency(summary?.valueCents ?: 0L)}) vuelve a la cuenta general y se borran sus movimientos.")
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        onDeleteInvestment(current.investmentId)
+                        close()
+                    }) { Text("Eliminar", color = expenseColor) }
+                },
+                dismissButton = { TextButton(onClick = close) { Text("Cancelar") } },
+            )
+        }
+        is InvestmentDialog.ConfirmDeleteMovement -> AlertDialog(
+            onDismissRequest = close,
+            title = { Text("¿Eliminar movimiento?") },
+            text = { Text("${movementTitle(current.movement)}: ${formatCurrency(current.movement.amountCents.absoluteValue)}") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDeleteMovement(current.movement)
+                    close()
+                }) { Text("Eliminar", color = expenseColor) }
+            },
+            dismissButton = { TextButton(onClick = close) { Text("Cancelar") } },
+        )
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item {
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text("Inversiones", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        formatCurrency(overview.totalValueCents),
+                        style = MaterialTheme.typography.headlineLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        SummaryMetric(
+                            "Aportado",
+                            formatCurrency(overview.contributedCents),
+                            MaterialTheme.colorScheme.onSurface,
+                            Modifier.weight(1f),
+                        )
+                        SummaryMetric(
+                            "Rentabilidad",
+                            formatSignedCurrency(overview.totalGainCents),
+                            if (overview.totalGainCents >= 0L) incomeColor else expenseColor,
+                            Modifier.weight(1f),
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(onClick = { dialog = InvestmentDialog.Transfer(toInvestments = true) }, modifier = Modifier.weight(1f)) {
+                            Text("Mover desde saldo")
+                        }
+                        OutlinedButton(onClick = { dialog = InvestmentDialog.Transfer(toInvestments = false) }, modifier = Modifier.weight(1f)) {
+                            Text("Volver al saldo")
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { dialog = InvestmentDialog.PotValue },
+                shape = RoundedCornerShape(22.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Cuenta general", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "Intereses ${formatSignedCurrency(overview.potGainCents)} | Toca para actualizar",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(
+                        formatCurrency(overview.potValueCents),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+        }
+
+        items(overview.investments, key = { it.investment.id }) { summary ->
+            InvestmentRow(summary = summary, onClick = { dialog = InvestmentDialog.Actions(summary.investment.id) })
+        }
+
+        item {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                TextButton(onClick = { dialog = InvestmentDialog.NewInvestment }) {
+                    Icon(Icons.Rounded.AddCircle, contentDescription = null)
+                    Text("  Nueva inversión")
+                }
+            }
+        }
+
+        if (overview.movements.isNotEmpty()) {
+            item {
+                val visibleMovements = if (showAllMovements) overview.movements else overview.movements.take(5)
+                Card(
+                    shape = RoundedCornerShape(24.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                ) {
+                    Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("Movimientos", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        visibleMovements.forEach { movement ->
+                            InvestmentMovementRow(
+                                movement = movement,
+                                onDelete = { dialog = InvestmentDialog.ConfirmDeleteMovement(movement) },
+                            )
+                        }
+                        if (overview.movements.size > 5) {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                                IconButton(onClick = { showAllMovements = !showAllMovements }) {
+                                    Icon(
+                                        imageVector = if (showAllMovements) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                        contentDescription = if (showAllMovements) "Mostrar menos" else "Mostrar más",
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InvestmentAction(label: String, color: Color = Color.Unspecified, onClick: () -> Unit) {
+    Text(
+        text = label,
+        color = color,
+        style = MaterialTheme.typography.bodyLarge,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp, horizontal = 8.dp),
+    )
+}
+
+@Composable
+private fun InvestmentRow(summary: InvestmentSummary, onClick: () -> Unit) {
+    val gainCents = summary.valueCents - summary.investedCents
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    summary.investment.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "Invertido ${formatCurrency(summary.investedCents)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(formatCurrency(summary.valueCents), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    formatSignedCurrency(gainCents),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (gainCents >= 0L) incomeColor else expenseColor,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun InvestmentMovementRow(movement: InvestmentMovement, onDelete: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(movementTitle(movement), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                listOf(
+                    movement.occurredOn.format(DateTimeFormatter.ofPattern("d MMM yyyy", Locale.forLanguageTag("es-ES"))),
+                    movement.notes,
+                ).filter { it.isNotBlank() }.joinToString(" | "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(formatCurrency(movement.amountCents.absoluteValue), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        IconButton(onClick = onDelete) {
+            Icon(Icons.Rounded.DeleteOutline, contentDescription = "Eliminar movimiento")
+        }
+    }
+}
+
+private fun movementTitle(movement: InvestmentMovement): String = when (movement) {
+    is InvestmentMovement.Transfer -> if (movement.amountCents >= 0L) "Saldo → Cuenta general" else "Cuenta general → Saldo"
+    is InvestmentMovement.Allocation -> {
+        val name = movement.investmentName.ifBlank { "Inversión" }
+        if (movement.amountCents >= 0L) "Cuenta general → $name" else "$name → Cuenta general"
+    }
+}
+
+@Composable
+private fun AmountDialog(
+    title: String,
+    supportingText: String?,
+    initialValue: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    var input by rememberSaveable { mutableStateOf(initialValue) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                supportingText?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                OutlinedTextField(
+                    value = input,
+                    onValueChange = { input = it },
+                    label = { Text("Importe") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(input) }) { Text("Guardar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+@Composable
+private fun TransferDialog(
+    toInvestments: Boolean,
+    availableCents: Long?,
+    onDismiss: () -> Unit,
+    onSave: (amount: String, notes: String, date: String) -> Unit,
+) {
+    var amountInput by rememberSaveable { mutableStateOf("") }
+    var notesInput by rememberSaveable { mutableStateOf("") }
+    var dateInput by rememberSaveable { mutableStateOf(formatExpenseInputDate(LocalDate.now())) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (toInvestments) "Mover a inversiones" else "Volver al saldo") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    availableCents?.let { "Disponible en la cuenta general: ${formatCurrency(it)}" }
+                        ?: "Se resta del saldo y va a la cuenta general. No cuenta como gasto.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = amountInput,
+                    onValueChange = { amountInput = it },
+                    label = { Text("Importe") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                )
+                OutlinedTextField(
+                    value = notesInput,
+                    onValueChange = { notesInput = it },
+                    label = { Text("Nota") },
+                    singleLine = true,
+                )
+                DateWheelButton(
+                    date = parseExpenseInputDate(dateInput) ?: LocalDate.now(),
+                    onDateSelected = { dateInput = formatExpenseInputDate(it) },
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(amountInput, notesInput, dateInput) }) { Text("Guardar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+@Composable
+private fun NewInvestmentDialog(
+    availableCents: Long,
+    onDismiss: () -> Unit,
+    onSave: (name: String, initialAmount: String) -> Unit,
+) {
+    var nameInput by rememberSaveable { mutableStateOf("") }
+    var amountInput by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Nueva inversión") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    label = { Text("Nombre (ETF, acción...)") },
+                    singleLine = true,
+                )
+                Text("Disponible en la cuenta general: ${formatCurrency(availableCents)}", style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = amountInput,
+                    onValueChange = { amountInput = it },
+                    label = { Text("Importe inicial (opcional)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(nameInput, amountInput) }) { Text("Guardar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
 }

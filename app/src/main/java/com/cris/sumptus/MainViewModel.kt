@@ -8,6 +8,9 @@ import com.cris.sumptus.data.ExpenseEntry
 import com.cris.sumptus.data.ExpenseRepository
 import com.cris.sumptus.data.ExtraEntry
 import com.cris.sumptus.data.IncomeType
+import com.cris.sumptus.data.Investment
+import com.cris.sumptus.data.InvestmentAllocation
+import com.cris.sumptus.data.InvestmentTransfer
 import com.cris.sumptus.data.categoryColorKey
 import com.cris.sumptus.data.normalizeCategoryName
 import java.time.LocalDate
@@ -79,32 +82,82 @@ sealed interface TimelineEntry {
     }
 }
 
+/**
+ * End-of-month balance for every month from the earliest known activity (expense, income or
+ * manual adjustment) through [throughMonth], carrying the previous month's ending balance
+ * forward into the next one. A month with no activity and no adjustment simply keeps the
+ * balance unchanged, so the general balance never silently resets to 0 when the month rolls over.
+ */
+internal fun buildMonthEndingBalances(
+    expenses: List<ExpenseEntry>,
+    extraEntries: List<ExtraEntry>,
+    monthlyBalanceAdjustments: Map<String, Long>,
+    throughMonth: YearMonth,
+    investmentTransfers: List<InvestmentTransfer> = emptyList(),
+): Map<YearMonth, Long> {
+    val expensesByMonth = expenses.groupBy { YearMonth.from(it.occurredOn) }
+    val extrasByMonth = extraEntries.groupBy { YearMonth.from(it.occurredOn) }
+    val transfersByMonth = investmentTransfers.groupBy { YearMonth.from(it.occurredOn) }
+    val knownMonths = expensesByMonth.keys + extrasByMonth.keys + transfersByMonth.keys +
+        monthlyBalanceAdjustments.keys.map(YearMonth::parse)
+    val firstMonth = (knownMonths + throughMonth).minOrNull() ?: return emptyMap()
+
+    val balances = LinkedHashMap<YearMonth, Long>()
+    var balance = 0L
+    var month = firstMonth
+    while (month <= throughMonth) {
+        val monthExpenseTotal = expensesByMonth[month]?.sumOf { it.amountCents } ?: 0L
+        val monthExtraTotal = extrasByMonth[month]?.sumOf { it.amountCents } ?: 0L
+        val monthTransferTotal = transfersByMonth[month]?.sumOf { it.amountCents } ?: 0L
+        val adjustment = monthlyBalanceAdjustments[month.toString()] ?: 0L
+        balance += adjustment + monthExtraTotal - monthExpenseTotal - monthTransferTotal
+        balances[month] = balance
+        month = month.plusMonths(1)
+    }
+    return balances
+}
+
+/** A movement that changes the Saldo, used to rebuild the balance right after each expense. */
+private data class BalanceMovement(
+    val id: String,
+    val occurredOn: LocalDate,
+    val createdAtEpochMillis: Long,
+    val deltaCents: Long,
+    val isExpense: Boolean,
+)
+
 internal fun buildRecentExpenses(
     expenses: List<ExpenseEntry>,
     extraEntries: List<ExtraEntry>,
     monthlyBalanceAdjustments: Map<String, Long>,
+    investmentTransfers: List<InvestmentTransfer> = emptyList(),
 ): List<RecentExpense> {
+    if (expenses.isEmpty()) return emptyList()
+
+    val movementsByMonth = buildList {
+        expenses.forEach { add(BalanceMovement(it.id, it.occurredOn, it.createdAtEpochMillis, -it.amountCents, isExpense = true)) }
+        extraEntries.forEach { add(BalanceMovement(it.id, it.occurredOn, it.createdAtEpochMillis, it.amountCents, isExpense = false)) }
+        investmentTransfers.forEach { add(BalanceMovement(it.id, it.occurredOn, it.createdAtEpochMillis, -it.amountCents, isExpense = false)) }
+    }.groupBy { YearMonth.from(it.occurredOn) }
+    val lastMonth = (movementsByMonth.keys + monthlyBalanceAdjustments.keys.map(YearMonth::parse)).max()
+    val monthEndingBalances = buildMonthEndingBalances(
+        expenses,
+        extraEntries,
+        monthlyBalanceAdjustments,
+        lastMonth,
+        investmentTransfers,
+    )
+
     val balances = mutableMapOf<String, Long>()
+    movementsByMonth.forEach { (month, movements) ->
+        var balance = monthEndingBalances.getValue(month)
 
-    (expenses.map { TimelineEntry.ExpenseItem(it) } + extraEntries.map { TimelineEntry.ExtraItem(it) })
-        .groupBy { YearMonth.from(it.occurredOn) }
-        .forEach { (month, entries) ->
-            var balance = monthlyBalanceAdjustments[month.toString()] ?: 0L
-            entries.forEach { entry ->
-                balance += if (entry is TimelineEntry.ExtraItem) entry.amountCents else -entry.amountCents
+        movements.sortedWith(compareByDescending<BalanceMovement> { it.createdAtEpochMillis }.thenByDescending { it.id })
+            .forEach { movement ->
+                if (movement.isExpense) balances[movement.id] = balance
+                balance -= movement.deltaCents
             }
-
-            entries.sortedWith(compareByDescending<TimelineEntry> { it.createdAtEpochMillis }.thenByDescending { it.id })
-                .forEach { entry ->
-                    when (entry) {
-                        is TimelineEntry.ExpenseItem -> {
-                            balances[entry.id] = balance
-                            balance += entry.amountCents
-                        }
-                        is TimelineEntry.ExtraItem -> balance -= entry.amountCents
-                    }
-                }
-        }
+    }
 
     return expenses
         .sortedWith(compareByDescending<ExpenseEntry> { it.createdAtEpochMillis }.thenByDescending { it.id })
@@ -172,6 +225,88 @@ internal fun effectiveGeneralExtraLimit(changes: Map<String, Long>, month: YearM
         YearMonth.parse(changeMonth).takeIf { it <= month }?.let { it to amountCents }
     }.maxByOrNull { it.first }?.second
 
+data class InvestmentSummary(
+    val investment: Investment,
+    val investedCents: Long,
+    val valueCents: Long,
+)
+
+sealed interface InvestmentMovement {
+    val id: String
+    val amountCents: Long
+    val notes: String
+    val occurredOn: LocalDate
+    val createdAtEpochMillis: Long
+
+    /** Saldo <-> cuenta general. Positive = from Saldo into the pot. */
+    data class Transfer(val transfer: InvestmentTransfer) : InvestmentMovement {
+        override val id = transfer.id
+        override val amountCents = transfer.amountCents
+        override val notes = transfer.notes
+        override val occurredOn = transfer.occurredOn
+        override val createdAtEpochMillis = transfer.createdAtEpochMillis
+    }
+
+    /** Cuenta general <-> one investment. Positive = from the pot into the investment. */
+    data class Allocation(val allocation: InvestmentAllocation, val investmentName: String) : InvestmentMovement {
+        override val id = allocation.id
+        override val amountCents = allocation.amountCents
+        override val notes = allocation.notes
+        override val occurredOn = allocation.occurredOn
+        override val createdAtEpochMillis = allocation.createdAtEpochMillis
+    }
+}
+
+data class InvestmentOverview(
+    /** Net money moved from the Saldo into investments (transfers in minus transfers out). */
+    val contributedCents: Long,
+    /** Cash sitting in the general pot (e.g. the remunerated account), interest included. */
+    val potValueCents: Long,
+    val potGainCents: Long,
+    val investments: List<InvestmentSummary>,
+    val totalValueCents: Long,
+    val totalGainCents: Long,
+    val movements: List<InvestmentMovement>,
+) {
+    companion object {
+        fun empty() = InvestmentOverview(0L, 0L, 0L, emptyList(), 0L, 0L, emptyList())
+    }
+}
+
+internal fun buildInvestmentOverview(
+    transfers: List<InvestmentTransfer>,
+    investments: List<Investment>,
+    allocations: List<InvestmentAllocation>,
+    potGainCents: Long,
+): InvestmentOverview {
+    val contributedCents = transfers.sumOf { it.amountCents }
+    val allocationsByInvestment = allocations.groupBy { it.investmentId }
+    val summaries = investments
+        .sortedBy { it.createdAtEpochMillis }
+        .map { investment ->
+            val investedCents = allocationsByInvestment[investment.id]?.sumOf { it.amountCents } ?: 0L
+            InvestmentSummary(investment, investedCents, investedCents + investment.gainCents)
+        }
+    val potValueCents = contributedCents - allocations.sumOf { it.amountCents } + potGainCents
+    val totalValueCents = potValueCents + summaries.sumOf { it.valueCents }
+    val namesById = investments.associate { it.id to it.name }
+    val movements = (
+        transfers.map { InvestmentMovement.Transfer(it) } +
+            allocations.map { InvestmentMovement.Allocation(it, namesById[it.investmentId].orEmpty()) }
+        ).sortedWith(
+        compareByDescending<InvestmentMovement> { it.occurredOn }.thenByDescending { it.createdAtEpochMillis },
+    )
+    return InvestmentOverview(
+        contributedCents = contributedCents,
+        potValueCents = potValueCents,
+        potGainCents = potGainCents,
+        investments = summaries,
+        totalValueCents = totalValueCents,
+        totalGainCents = totalValueCents - contributedCents,
+        movements = movements,
+    )
+}
+
 data class SumptusUiState(
     val selectedMonth: YearMonth,
     val monthLabel: String,
@@ -187,6 +322,7 @@ data class SumptusUiState(
     val lastThreeMonthExpenses: List<MonthExpenseComparison>,
     val recentExpenses: List<RecentExpense>,
     val historyEntries: List<TimelineEntry>,
+    val investmentOverview: InvestmentOverview,
     val isDarkTheme: Boolean,
     val feedbackMessage: String? = null,
 ) {
@@ -206,6 +342,7 @@ data class SumptusUiState(
             lastThreeMonthExpenses = emptyList(),
             recentExpenses = emptyList(),
             historyEntries = emptyList(),
+            investmentOverview = InvestmentOverview.empty(),
             isDarkTheme = false,
             feedbackMessage = null,
         )
@@ -227,6 +364,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val monthlyBalanceAdjustments: Map<String, Long>,
         val selectedMonth: YearMonth,
     )
+
+    private data class InvestmentInputs(
+        val transfers: List<InvestmentTransfer>,
+        val investments: List<Investment>,
+        val allocations: List<InvestmentAllocation>,
+        val potGainCents: Long,
+    )
+
+    private val investmentInputs = combine(
+        repository.investmentTransfers,
+        repository.investments,
+        repository.investmentAllocations,
+        repository.generalPotGainCents,
+    ) { transfers, investments, allocations, potGainCents ->
+        InvestmentInputs(transfers, investments, allocations, potGainCents)
+    }
 
     private data class EntryInputs(
         val expenses: List<ExpenseEntry>,
@@ -264,8 +417,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    val uiState: StateFlow<SumptusUiState> = combine(summaryInputs, feedback, repository.darkTheme) { inputs, message, isDarkTheme ->
+    val uiState: StateFlow<SumptusUiState> = combine(
+        summaryInputs,
+        investmentInputs,
+        feedback,
+        repository.darkTheme,
+    ) { inputs, investmentData, message, isDarkTheme ->
         buildUiState(
+            investmentInputs = investmentData,
             expenses = inputs.expenses,
             storedCategories = inputs.categories,
             categoryColors = inputs.categoryColors,
@@ -512,11 +671,150 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Moves money between the Saldo and the general investment pot. */
+    fun saveInvestmentTransfer(amountInput: String, notes: String, occurredOnInput: String, toInvestments: Boolean): Boolean {
+        val amountCents = parsePositiveAmount(amountInput) ?: return false
+        val occurredOn = parseExpenseInputDate(occurredOnInput)
+        if (occurredOn == null) {
+            feedback.value = "Fecha no válida."
+            return false
+        }
+        if (!toInvestments && amountCents > uiState.value.investmentOverview.potValueCents) {
+            feedback.value = "No hay tanto en la cuenta general."
+            return false
+        }
+
+        viewModelScope.launch {
+            repository.upsertInvestmentTransfer(
+                InvestmentTransfer(
+                    amountCents = if (toInvestments) amountCents else -amountCents,
+                    notes = notes.trim(),
+                    occurredOn = occurredOn,
+                ),
+            )
+            feedback.value = if (toInvestments) "Movido a inversiones." else "Devuelto al saldo."
+        }
+        return true
+    }
+
+    /** Sets the current value of the general pot (e.g. after the monthly interest is paid). */
+    fun setGeneralPotValue(amountInput: String): Boolean {
+        val targetCents = parseAmountToCents(amountInput)
+        if (targetCents == null || targetCents < 0L) {
+            feedback.value = "Importe no válido."
+            return false
+        }
+        val overview = uiState.value.investmentOverview
+        val potWithoutGain = overview.potValueCents - overview.potGainCents
+        viewModelScope.launch {
+            repository.setGeneralPotGainCents(targetCents - potWithoutGain)
+            feedback.value = "Valor actualizado."
+        }
+        return true
+    }
+
+    fun addInvestment(name: String, initialAmountInput: String): Boolean {
+        val trimmedName = name.trim()
+        if (trimmedName.isBlank()) {
+            feedback.value = "Escribe un nombre."
+            return false
+        }
+        if (uiState.value.investmentOverview.investments.any { it.investment.name.equals(trimmedName, ignoreCase = true) }) {
+            feedback.value = "Esa inversión ya existe."
+            return false
+        }
+        val initialCents = if (initialAmountInput.isBlank()) 0L else parsePositiveAmount(initialAmountInput) ?: return false
+        if (initialCents > uiState.value.investmentOverview.potValueCents) {
+            feedback.value = "No hay tanto en la cuenta general."
+            return false
+        }
+
+        val investment = Investment(name = trimmedName)
+        viewModelScope.launch {
+            repository.addInvestment(investment)
+            if (initialCents > 0L) {
+                repository.upsertInvestmentAllocation(
+                    InvestmentAllocation(investmentId = investment.id, amountCents = initialCents, occurredOn = LocalDate.now()),
+                )
+            }
+            feedback.value = "Inversión añadida."
+        }
+        return true
+    }
+
+    /** Moves money between the general pot and one investment. */
+    fun saveInvestmentAllocation(investmentId: String, amountInput: String, intoInvestment: Boolean): Boolean {
+        val amountCents = parsePositiveAmount(amountInput) ?: return false
+        val overview = uiState.value.investmentOverview
+        val available = if (intoInvestment) {
+            overview.potValueCents
+        } else {
+            overview.investments.firstOrNull { it.investment.id == investmentId }?.valueCents ?: 0L
+        }
+        if (amountCents > available) {
+            feedback.value = if (intoInvestment) "No hay tanto en la cuenta general." else "La inversión no vale tanto."
+            return false
+        }
+
+        viewModelScope.launch {
+            repository.upsertInvestmentAllocation(
+                InvestmentAllocation(
+                    investmentId = investmentId,
+                    amountCents = if (intoInvestment) amountCents else -amountCents,
+                    occurredOn = LocalDate.now(),
+                ),
+            )
+            feedback.value = if (intoInvestment) "Dinero invertido." else "Devuelto a la cuenta general."
+        }
+        return true
+    }
+
+    fun setInvestmentValue(investmentId: String, amountInput: String): Boolean {
+        val targetCents = parseAmountToCents(amountInput)
+        if (targetCents == null || targetCents < 0L) {
+            feedback.value = "Importe no válido."
+            return false
+        }
+        val summary = uiState.value.investmentOverview.investments.firstOrNull { it.investment.id == investmentId } ?: return false
+        viewModelScope.launch {
+            repository.setInvestmentGain(investmentId, targetCents - summary.investedCents)
+            feedback.value = "Valor actualizado."
+        }
+        return true
+    }
+
+    fun deleteInvestment(investmentId: String) {
+        viewModelScope.launch {
+            repository.deleteInvestment(investmentId)
+            feedback.value = "Inversión eliminada."
+        }
+    }
+
+    fun deleteInvestmentMovement(movement: InvestmentMovement) {
+        viewModelScope.launch {
+            when (movement) {
+                is InvestmentMovement.Transfer -> repository.deleteInvestmentTransfer(movement.id)
+                is InvestmentMovement.Allocation -> repository.deleteInvestmentAllocation(movement.id)
+            }
+            feedback.value = "Movimiento eliminado."
+        }
+    }
+
+    private fun parsePositiveAmount(amountInput: String): Long? {
+        val amountCents = parseAmountToCents(amountInput)
+        if (amountCents == null || amountCents <= 0L) {
+            feedback.value = "Importe no válido."
+            return null
+        }
+        return amountCents
+    }
+
     fun clearFeedback() {
         feedback.value = null
     }
 
     private fun buildUiState(
+        investmentInputs: InvestmentInputs,
         expenses: List<ExpenseEntry>,
         storedCategories: List<String>,
         categoryColors: Map<String, Long>,
@@ -534,7 +832,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val monthExtraTotal = monthExtras.sumOf { it.amountCents }
         val monthIncomeTotal = monthExtraTotal
         val balanceAdjustmentCents = monthlyBalanceAdjustments[selectedMonth.toString()] ?: 0L
-        val currentBalanceCents = balanceAdjustmentCents + monthIncomeTotal - monthExpenseTotal
+        val transfers = investmentInputs.transfers
+        val currentBalanceCents = buildMonthEndingBalances(
+            expenses,
+            extraEntries,
+            monthlyBalanceAdjustments,
+            selectedMonth,
+            transfers,
+        )[selectedMonth] ?: 0L
 
         return SumptusUiState(
             selectedMonth = selectedMonth,
@@ -555,8 +860,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ),
             generalExtraLimitCents = effectiveGeneralExtraLimit(generalExtraLimitChanges, selectedMonth),
             lastThreeMonthExpenses = buildLastThreeMonthExpenses(expenses, selectedMonth),
-            recentExpenses = buildRecentExpenses(expenses, extraEntries, monthlyBalanceAdjustments),
+            recentExpenses = buildRecentExpenses(expenses, extraEntries, monthlyBalanceAdjustments, transfers),
             historyEntries = buildHistoryEntries(monthExpenses, monthExtras),
+            investmentOverview = buildInvestmentOverview(
+                transfers,
+                investmentInputs.investments,
+                investmentInputs.allocations,
+                investmentInputs.potGainCents,
+            ),
             isDarkTheme = isDarkTheme,
             feedbackMessage = feedbackMessage,
         )

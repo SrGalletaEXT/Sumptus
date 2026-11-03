@@ -48,7 +48,7 @@ class RecentExpenseBalanceTest {
     }
 
     @Test
-    fun keepsBalancesIndependentForEachMonth() {
+    fun carriesTheBalanceFromThePreviousMonthIntoTheNext() {
         val currentMonth = YearMonth.now()
         val previousMonth = currentMonth.minusMonths(1)
         val currentExpense = ExpenseEntry(
@@ -73,8 +73,36 @@ class RecentExpenseBalanceTest {
             mapOf(currentMonth.toString() to 1_000L, previousMonth.toString() to 2_000L),
         ).associate { it.expense.id to it.balanceAfterCents }
 
-        assertEquals(700L, balances["current"])
+        // previous month: 0 (nothing before it) + 2_000 adjustment - 100 expense = 1_900
         assertEquals(1_900L, balances["previous"])
+        // current month carries the 1_900 ending balance forward, then applies its own
+        // adjustment and expense: 1_900 + 1_000 - 300 = 2_600
+        assertEquals(2_600L, balances["current"])
+    }
+
+    @Test
+    fun keepsTheBalanceWhenAMonthHasNoActivityOrAdjustment() {
+        val currentMonth = YearMonth.now()
+        val twoMonthsAgo = currentMonth.minusMonths(2)
+        val oldExpense = ExpenseEntry(
+            id = "old",
+            title = "",
+            amountCents = 400L,
+            category = "",
+            notes = "",
+            occurredOn = twoMonthsAgo.atDay(1),
+        )
+        val currentExpense = oldExpense.copy(id = "current", amountCents = 100L, occurredOn = currentMonth.atDay(1))
+
+        // No entries at all for last month: the balance must simply carry over, not reset to 0.
+        val balances = buildRecentExpenses(
+            listOf(oldExpense, currentExpense),
+            emptyList(),
+            mapOf(twoMonthsAgo.toString() to 1_000L),
+        ).associate { it.expense.id to it.balanceAfterCents }
+
+        assertEquals(600L, balances["old"])
+        assertEquals(500L, balances["current"])
     }
 
     @Test
